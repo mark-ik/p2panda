@@ -21,6 +21,9 @@ needless_pass_by_ref_mut = "warn"
 
 [workspace.dependencies]
 blake3 = { version = "1.8.5" }
+# Needed by p2panda-net's CBOR wire codec. Upstream dropped this from the
+# workspace once the postcard switch made it unused; this fork keeps CBOR.
+ciborium = { version = "0.2.2" }
 futures-channel = { version = "0.3.32" }
 futures-test = { version = "0.3.32" }
 futures-util = { version = "0.3.32", default-features = false }
