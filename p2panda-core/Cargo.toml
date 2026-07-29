@@ -35,7 +35,7 @@ test_utils = [
 arbitrary = { version = "1.4.1", optional = true, features = ["derive"] }
 blake3 = { workspace = true }
 ciborium = { version = "0.2.2" }
-ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+ed25519-dalek = "3"
 hex = { workspace = true, features = ["serde"] }
 mock_instant = { workspace = true, optional = true }
 rand = "0.8.5"

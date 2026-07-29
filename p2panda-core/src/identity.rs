@@ -27,6 +27,7 @@ use std::str::FromStr;
 #[cfg(feature = "arbitrary")]
 use arbitrary::Arbitrary;
 use ed25519_dalek::Signer;
+use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -58,9 +59,12 @@ impl Default for SigningKey {
 impl SigningKey {
     /// Generates a new signing key using the system's random number generator (CSPRNG) as a seed.
     pub fn generate() -> Self {
-        let mut csprng: OsRng = OsRng;
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut csprng);
-        Self(signing_key)
+        // An Ed25519 secret key is 32 uniform random bytes (dalek's `generate`
+        // does exactly this); building it from bytes avoids coupling to the
+        // rand_core version ed25519-dalek 3.x binds.
+        let mut bytes = [0u8; SIGNING_KEY_LEN];
+        OsRng.fill_bytes(&mut bytes);
+        Self(ed25519_dalek::SigningKey::from_bytes(&bytes))
     }
 
     /// Create a `SigningKey` from its raw bytes representation.
