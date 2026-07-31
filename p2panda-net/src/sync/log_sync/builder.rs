@@ -27,6 +27,7 @@ where
     store: S,
     endpoint: Endpoint,
     gossip: Gossip,
+    protocol_id: Vec<u8>,
     _marker: PhantomData<(L, E)>,
 }
 
@@ -45,8 +46,22 @@ where
             store,
             endpoint,
             gossip,
+            protocol_id: LOG_SYNC_PROTOCOL_ID.to_vec(),
             _marker: PhantomData,
         }
+    }
+
+    /// Name this instance's sync protocol id (ALPN).
+    ///
+    /// The endpoint keeps exactly one handler per protocol id, so every
+    /// `LogSync` sharing an endpoint must name a distinct id: with the shared
+    /// default, the last-spawned instance silently receives ALL inbound sync
+    /// sessions and every other instance stops converging. Both peers must
+    /// name the same id for the same lane, since the initiating side dials
+    /// this id and the accepting side routes by it.
+    pub fn protocol_id(mut self, protocol_id: impl AsRef<[u8]>) -> Self {
+        self.protocol_id = protocol_id.as_ref().to_vec();
+        self
     }
 
     pub async fn spawn(self) -> Result<LogSync<S, L, E>, LogSyncError<E>> {
@@ -54,7 +69,7 @@ where
             let thread_pool = ThreadLocalActorSpawner::new();
 
             let args = (
-                LOG_SYNC_PROTOCOL_ID.to_vec(),
+                self.protocol_id,
                 self.store,
                 self.endpoint,
                 self.gossip,
