@@ -1,6 +1,16 @@
 name: CI
 
-on: push
+on:
+  push:
+    branches:
+      - main
+      - development
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 env:
   CARGO_TERM_COLOR: always
