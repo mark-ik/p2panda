@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use p2panda_discovery::random_walk::{RandomWalker, RandomWalkerConfig};
 use p2panda_discovery::{DiscoveryResult, DiscoveryStrategy};
-use p2panda_store::SqliteStore;
 use ractor::thread_local::ThreadLocalActor;
 use ractor::{ActorProcessingErr, ActorRef, cast};
 use rand_chacha::ChaCha20Rng;
@@ -14,6 +13,7 @@ use tokio::time;
 use tracing::trace;
 
 use crate::NodeId;
+use crate::address_book::AddressBookStoreHandle;
 use crate::addrs::NodeInfo;
 use crate::discovery::DiscoveryConfig;
 use crate::discovery::actors::ToDiscoveryManager;
@@ -87,7 +87,7 @@ pub enum ToDiscoveryWalker {
 
 pub struct DiscoveryWalkerState {
     manager_ref: ActorRef<ToDiscoveryManager>,
-    walker: RandomWalker<ChaCha20Rng, SqliteStore, NodeId, NodeInfo>,
+    walker: RandomWalker<ChaCha20Rng, AddressBookStoreHandle, NodeId, NodeInfo>,
     backoff: Backoff,
     walker_reset: Arc<Notify>,
 }
@@ -103,7 +103,7 @@ impl ThreadLocalActor for DiscoveryWalker {
     type Arguments = (
         NodeId,
         DiscoveryConfig,
-        SqliteStore,
+        AddressBookStoreHandle,
         ChaCha20Rng,
         Arc<Notify>,
         ActorRef<ToDiscoveryManager>,

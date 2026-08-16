@@ -29,8 +29,13 @@ default = [
   "discovery",
   "gossip",
   "sync",
+  "sqlite",
 ]
-address_book = [
+address_book = []
+# Convenience SQLite address book store, and the `tx!` macro it is driven with.
+# The address book itself is store-agnostic; this only supplies the default
+# backend `AddressBook::builder()` falls back to when no store is given.
+sqlite = [
   "p2panda-store/macros",
   "p2panda-store/sqlite",
 ]
@@ -61,6 +66,7 @@ sync = [
 supervisor = []
 test_utils = [
   "default",
+  "sqlite",
   "supervisor",
   "dep:tracing-subscriber",
   "p2panda-core/test_utils",

@@ -5,6 +5,7 @@ mod actor;
 mod api;
 mod builder;
 pub mod report;
+mod store;
 #[cfg(feature = "supervisor")]
 mod supervisor;
 #[cfg(test)]
@@ -13,3 +14,4 @@ pub mod watchers;
 
 pub use api::{AddressBook, AddressBookError};
 pub use builder::Builder;
+pub use store::{AddressBookStoreHandle, StoreError};

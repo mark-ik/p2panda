@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use p2panda_core::Topic;
-use p2panda_store::{SqliteError, SqliteStore};
 use ractor::{ActorRef, call, cast};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -12,6 +11,7 @@ use tokio::sync::RwLock;
 use crate::NodeId;
 use crate::address_book::Builder;
 use crate::address_book::actor::ToAddressBookActor;
+use crate::address_book::store::{AddressBookStoreHandle, StoreError};
 use crate::address_book::report::ConnectionOutcome;
 use crate::addrs::{NodeInfo, NodeInfoError, TransportInfo};
 use crate::watchers::{UpdatesOnly, WatcherReceiver};
@@ -263,7 +263,7 @@ impl AddressBook {
         Ok(())
     }
 
-    pub(crate) async fn store(&self) -> Result<SqliteStore, AddressBookError> {
+    pub(crate) async fn store(&self) -> Result<AddressBookStoreHandle, AddressBookError> {
         let inner = self.inner.read().await;
         let result = call!(
             inner.actor_ref.as_ref().expect("actor spawned in builder"),
@@ -299,7 +299,12 @@ pub enum AddressBookError {
 
     /// Address book store failed.
     #[error(transparent)]
-    Store(#[from] SqliteError),
+    Store(#[from] StoreError),
+
+    /// No store was supplied and no default backend is compiled in.
+    #[cfg(not(feature = "sqlite"))]
+    #[error("no address book store provided; supply one with `Builder::store` or enable the `sqlite` feature")]
+    NoStore,
 
     /// Invalid node info provided.
     #[error(transparent)]
