@@ -267,9 +267,13 @@ where
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        // Close all active sync sessions.
+        // Close all active sync sessions, then wait for every topic manager to
+        // drain. Topic managers own the protocol store, so returning before
+        // their post-stop hooks finish leaves durable backends locked after a
+        // top-level LogSync shutdown.
         for (_, (actor, _)) in state.topic_managers.topic_manager_map.drain() {
             actor.send_message(ToTopicManager::CloseAll)?;
+            actor.drain_and_wait(None).await?;
         }
 
         Ok(())

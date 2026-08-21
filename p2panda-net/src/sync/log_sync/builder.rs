@@ -65,19 +65,14 @@ where
     }
 
     pub async fn spawn(self) -> Result<LogSync<S, L, E>, LogSyncError<E>> {
-        let (actor_ref, _) = {
+        let (actor_ref, actor_task) = {
             let thread_pool = ThreadLocalActorSpawner::new();
 
-            let args = (
-                self.protocol_id,
-                self.store,
-                self.endpoint,
-                self.gossip,
-            );
+            let args = (self.protocol_id, self.store, self.endpoint, self.gossip);
 
             SyncManager::<TopicSyncManager<Topic, S, L, E>>::spawn(None, args, thread_pool).await?
         };
 
-        Ok(LogSync::new(actor_ref))
+        Ok(LogSync::new(actor_ref, actor_task))
     }
 }

@@ -8,6 +8,7 @@ use p2panda_core::{Extensions, Hash, LogId, Operation, SeqNum, Topic, VerifyingK
 use p2panda_store::logs::LogStore;
 use p2panda_store::topics::TopicStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
+use ractor::concurrency::JoinHandle;
 use ractor::{ActorRef, call};
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -59,6 +60,7 @@ where
 {
     #[allow(clippy::type_complexity)]
     actor_ref: ActorRef<ToSyncManager<Operation<E>, TopicLogSyncEvent<E>>>,
+    actor_task: Option<JoinHandle<()>>,
 }
 
 impl<S, L, E> LogSync<S, L, E>
@@ -74,9 +76,13 @@ where
     #[allow(clippy::type_complexity)]
     pub(crate) fn new(
         actor_ref: ActorRef<ToSyncManager<Operation<E>, TopicLogSyncEvent<E>>>,
+        actor_task: JoinHandle<()>,
     ) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Inner { actor_ref })),
+            inner: Arc::new(RwLock::new(Inner {
+                actor_ref,
+                actor_task: Some(actor_task),
+            })),
             _phantom: PhantomData,
         }
     }
@@ -101,6 +107,36 @@ where
             sync_manager_ref,
         ))
     }
+
+    /// Stop the sync manager and wait until its actor has released the store.
+    ///
+    /// Dropping a session requests the same stop, but does not wait for the
+    /// actor to finish. A resident process needs the stronger boundary before
+    /// it can reopen an exclusively locked durable backend during restart.
+    /// This stops the shared session even when another `LogSync` clone exists;
+    /// it is an authority-level close, not a per-handle detach.
+    pub async fn shutdown(self) -> Result<(), LogSyncError<E>> {
+        let (actor_ref, actor_task) = {
+            let mut inner = self.inner.write().await;
+            (inner.actor_ref.clone(), inner.actor_task.take())
+        };
+        let stop_error = actor_ref
+            .stop_and_wait(None, None)
+            .await
+            .err()
+            .map(|error| error.to_string());
+        let task_error = match actor_task {
+            Some(actor_task) => actor_task.await.err().map(|error| error.to_string()),
+            None => None,
+        };
+        if let Some(error) = stop_error {
+            return Err(LogSyncError::ActorStop(error));
+        }
+        if let Some(error) = task_error {
+            return Err(LogSyncError::ActorTask(error));
+        }
+        Ok(())
+    }
 }
 
 impl<E> Drop for Inner<E>
@@ -121,4 +157,12 @@ pub enum LogSyncError<E> {
     /// Messaging with internal actor via RPC failed.
     #[error(transparent)]
     ActorRpc(#[from] Box<ractor::RactorErr<ToSyncManager<Operation<E>, TopicLogSyncEvent<E>>>>),
+
+    /// Stopping the internal actor failed before its resources were released.
+    #[error("stopping logsync actor: {0}")]
+    ActorStop(String),
+
+    /// The actor stopped but its owning task failed before dropping state.
+    #[error("joining logsync actor task: {0}")]
+    ActorTask(String),
 }
