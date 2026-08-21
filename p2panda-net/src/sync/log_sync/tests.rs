@@ -1,20 +1,159 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::convert::Infallible;
+use std::sync::Arc;
 
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use p2panda_core::test_utils::setup_logging;
-use p2panda_core::{Operation, Topic};
+use p2panda_core::{Hash, Operation, SeqNum, Topic, VerifyingKey};
 use p2panda_net::codec::{into_codec_sink, into_codec_stream};
+use p2panda_store::logs::LogStore;
+use p2panda_store::topics::TopicStore;
 use p2panda_sync::FromSync;
 use p2panda_sync::protocols::{Logs, TopicLogSyncEvent as Event};
 use p2panda_sync::test_utils::{Peer, TestTopicSyncMessage};
 use p2panda_sync::traits::Protocol;
 use tokio_stream::StreamExt;
 
-use crate::test_utils::TestNode;
+use crate::LogSync;
+use crate::test_utils::{TestNode, test_args};
+
+#[derive(Clone, Debug, Default)]
+struct ReleaseTrackedStore {
+    lifetime: Arc<()>,
+}
+
+impl ReleaseTrackedStore {
+    fn live_handles(&self) -> usize {
+        Arc::strong_count(&self.lifetime)
+    }
+}
+
+impl LogStore<Operation<()>, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedStore {
+    type Error = Infallible;
+
+    async fn get_latest_entry(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &u64,
+    ) -> Result<Option<Operation<()>>, Self::Error> {
+        Ok(None)
+    }
+
+    async fn get_latest_entry_tx(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &u64,
+    ) -> Result<Option<Operation<()>>, Self::Error> {
+        Ok(None)
+    }
+
+    async fn get_log_heights(
+        &self,
+        _author: &VerifyingKey,
+        _logs: &[u64],
+    ) -> Result<Option<BTreeMap<u64, SeqNum>>, Self::Error> {
+        Ok(None)
+    }
+
+    async fn get_log_size(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &u64,
+        _after: Option<SeqNum>,
+        _until: Option<SeqNum>,
+    ) -> Result<Option<(u32, u32)>, Self::Error> {
+        Ok(None)
+    }
+
+    async fn get_log_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &u64,
+        _after: Option<SeqNum>,
+        _until: Option<SeqNum>,
+    ) -> Result<Option<Vec<(Operation<()>, Vec<u8>)>>, Self::Error> {
+        Ok(None)
+    }
+
+    async fn prune_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &u64,
+        _until: &SeqNum,
+    ) -> Result<u64, Self::Error> {
+        Ok(0)
+    }
+}
+
+impl TopicStore<Topic, VerifyingKey, u64> for ReleaseTrackedStore {
+    type Error = Infallible;
+
+    async fn associate(
+        &self,
+        _topic: &Topic,
+        _author: &VerifyingKey,
+        _data_id: &u64,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    async fn remove(
+        &self,
+        _topic: &Topic,
+        _author: &VerifyingKey,
+        _data_id: &u64,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    async fn resolve(
+        &self,
+        _topic: &Topic,
+    ) -> Result<BTreeMap<VerifyingKey, Vec<u64>>, Self::Error> {
+        Ok(BTreeMap::new())
+    }
+}
+
+#[tokio::test]
+async fn shutdown_waits_until_topic_managers_release_the_store() {
+    setup_logging();
+
+    let node = TestNode::spawn_with_args(test_args(), None).await;
+    let store = ReleaseTrackedStore::default();
+    let log_sync = LogSync::<ReleaseTrackedStore, u64, ()>::builder(
+        store.clone(),
+        node.endpoint.clone(),
+        node.gossip.clone(),
+    )
+    .protocol_id(b"p2panda-tests/store-release")
+    .spawn()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store.live_handles(),
+        2,
+        "the top-level sync manager owns the store after spawn"
+    );
+
+    let _handle = log_sync.stream(Topic::random(), true).await.unwrap();
+    assert_eq!(
+        store.live_handles(),
+        3,
+        "the topic manager owns a second store handle while the stream is live"
+    );
+
+    log_sync.shutdown().await.unwrap();
+    assert_eq!(
+        store.live_handles(),
+        1,
+        "shutdown returns only after every actor-owned store handle is released"
+    );
+}
 
 #[tokio::test]
 async fn e2e_log_sync() {
