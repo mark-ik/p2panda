@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 
 use p2panda_core::{SigningKey, Topic};
-use p2panda_net::address_book::AddressBookError;
+use p2panda_net::address_book::{AddressBookError, AddressBookStoreHandle};
 use p2panda_net::addrs::{NodeInfo, TrustedTransportInfo};
 use p2panda_net::discovery::{DiscoveryConfig, DiscoveryError};
 use p2panda_net::gossip::{GossipConfig, GossipError};
@@ -38,7 +38,10 @@ impl Network {
         signing_key: SigningKey,
         store: SqliteStore,
     ) -> Result<Self, NetworkError> {
-        let address_book = AddressBook::builder().store(store.clone()).spawn().await?;
+        let address_book = AddressBook::builder()
+            .store(AddressBookStoreHandle::with_transactions(store.clone()))
+            .spawn()
+            .await?;
 
         for (node_id, transport_info) in config.bootstraps {
             let mut node_info = NodeInfo::new(node_id).bootstrap();
