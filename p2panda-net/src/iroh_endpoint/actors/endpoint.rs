@@ -49,7 +49,11 @@ pub enum ToIrohEndpoint {
     Endpoint(RpcReplyPort<iroh::Endpoint>),
 
     /// Register protocol handler for a given ALPN (protocol identifier).
-    RegisterProtocol(ProtocolId, Box<dyn DynProtocolHandler>),
+    RegisterProtocol(ProtocolId, Box<dyn DynProtocolHandler>, RpcReplyPort<()>),
+
+    /// Register an exact, unsalted ALPN for a protocol implemented outside
+    /// p2panda's network-id partition.
+    RegisterRawProtocol(ProtocolId, Box<dyn DynProtocolHandler>, RpcReplyPort<()>),
 
     /// Starts a connection attempt to a remote iroh endpoint and returns a future which can be
     /// awaited for establishing the final connection.
@@ -223,22 +227,16 @@ impl ThreadLocalActor for IrohEndpoint {
                 state.endpoint = Some(endpoint);
                 state.accept_handle = Some(accept_handle);
             }
-            ToIrohEndpoint::RegisterProtocol(alpn, protocol_handler) => {
+            ToIrohEndpoint::RegisterProtocol(alpn, protocol_handler, reply) => {
                 let mixed_protocol_id = hash_protocol_id_with_network_id(&alpn, state.network_id);
                 debug!(alpn = %mixed_protocol_id.fmt_short(), "register protocol");
-
-                // Register protocol in our own map to accept it in the future.
-                let mut protocols = state.protocols.write().await;
-                protocols.insert(mixed_protocol_id, protocol_handler);
-
-                // Inform iroh endpoint about the new protocol as well.
-                state
-                    .endpoint
-                    .as_ref()
-                    .expect(
-                        "bind always takes place first, an endpoint must exist after this point",
-                    )
-                    .set_alpns(protocols.keys().cloned().collect());
+                register_protocol(state, mixed_protocol_id, protocol_handler).await;
+                let _ = reply.send(());
+            }
+            ToIrohEndpoint::RegisterRawProtocol(alpn, protocol_handler, reply) => {
+                debug!(alpn = %alpn.fmt_short(), "register raw protocol");
+                register_protocol(state, alpn, protocol_handler).await;
+                let _ = reply.send(());
             }
             ToIrohEndpoint::Connect(node_id, alpn, quic_transport_config, reply) => {
                 let mixed_protocol_id = hash_protocol_id_with_network_id(&alpn, state.network_id);
@@ -365,6 +363,23 @@ impl ThreadLocalActor for IrohEndpoint {
         // termination of any child actor would cause the endpoint to go down as well otherwise.
         Ok(())
     }
+}
+
+async fn register_protocol(
+    state: &IrohState,
+    alpn: ProtocolId,
+    protocol_handler: Box<dyn DynProtocolHandler>,
+) {
+    // Register protocol in our own map to accept it in the future.
+    let mut protocols = state.protocols.write().await;
+    protocols.insert(alpn, protocol_handler);
+
+    // Inform iroh endpoint about the new protocol as well.
+    state
+        .endpoint
+        .as_ref()
+        .expect("bind always takes place first, an endpoint must exist after this point")
+        .set_alpns(protocols.keys().cloned().collect());
 }
 
 #[derive(Debug, Error)]

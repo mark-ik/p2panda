@@ -128,3 +128,29 @@ async fn establish_connection() {
     // Shut down connection and actors.
     connection.close(0u32.into(), b"bye!");
 }
+
+#[tokio::test]
+async fn raw_protocol_keeps_its_exact_external_alpn() {
+    setup_logging();
+
+    let alice_address_book = AddressBook::builder().spawn().await.unwrap();
+    let bob_address_book = AddressBook::builder().spawn().await.unwrap();
+    let alice = Endpoint::builder(alice_address_book).spawn().await.unwrap();
+    let bob = Endpoint::builder(bob_address_book).spawn().await.unwrap();
+
+    alice
+        .accept_raw(ECHO_PROTOCOL_ID, EchoProtocol)
+        .await
+        .unwrap();
+    let alice_raw = alice.endpoint().await.unwrap();
+    let bob_raw = bob.endpoint().await.unwrap();
+    let connection = bob_raw
+        .connect(alice_raw.addr(), ECHO_PROTOCOL_ID)
+        .await
+        .expect("an external client negotiates the literal ALPN");
+    let (mut tx, mut rx) = connection.open_bi().await.unwrap();
+    tx.write_all(b"literal").await.unwrap();
+    tx.finish().unwrap();
+    assert_eq!(rx.read_to_end(64).await.unwrap(), b"literal");
+    connection.close(0u32.into(), b"done");
+}

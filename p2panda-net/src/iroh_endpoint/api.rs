@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use iroh::protocol::ProtocolHandler;
-use ractor::{ActorRef, call, cast};
+use ractor::{ActorRef, call};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -134,9 +134,35 @@ impl Endpoint {
     ) -> Result<(), EndpointError> {
         let protocol_id = protocol_id.as_ref().to_vec();
         let inner = self.inner.read().await;
-        cast!(
+        call!(
             inner.actor_ref.as_ref().expect("actor spawned in builder"),
-            ToIrohEndpoint::RegisterProtocol(protocol_id, Box::new(protocol_handler))
+            ToIrohEndpoint::RegisterProtocol,
+            protocol_id,
+            Box::new(protocol_handler)
+        )
+        .map_err(Box::new)?;
+        Ok(())
+    }
+
+    /// Register a protocol under its exact ALPN, without the endpoint's
+    /// network-id salt.
+    ///
+    /// Use this only to compose an external standard protocol whose clients
+    /// negotiate a fixed ALPN themselves. Ordinary p2panda protocols should
+    /// use [`Self::accept`], which keeps different p2panda network ids unable
+    /// to connect accidentally.
+    pub async fn accept_raw<P: ProtocolHandler>(
+        &self,
+        protocol_id: impl AsRef<[u8]>,
+        protocol_handler: P,
+    ) -> Result<(), EndpointError> {
+        let protocol_id = protocol_id.as_ref().to_vec();
+        let inner = self.inner.read().await;
+        call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToIrohEndpoint::RegisterRawProtocol,
+            protocol_id,
+            Box::new(protocol_handler)
         )
         .map_err(Box::new)?;
         Ok(())
