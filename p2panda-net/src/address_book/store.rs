@@ -337,7 +337,10 @@ impl AddressBookStore<NodeId, NodeInfo> for AddressBookStoreHandle {
         self.0.remove_older_than(duration)
     }
 
-    fn node_info(&self, id: &NodeId) -> impl Future<Output = Result<Option<NodeInfo>, Self::Error>> {
+    fn node_info(
+        &self,
+        id: &NodeId,
+    ) -> impl Future<Output = Result<Option<NodeInfo>, Self::Error>> {
         self.0.node_info(id)
     }
 

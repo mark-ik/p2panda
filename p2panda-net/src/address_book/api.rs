@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 use crate::NodeId;
 use crate::address_book::Builder;
 use crate::address_book::actor::ToAddressBookActor;
-use crate::address_book::store::{AddressBookStoreHandle, StoreError};
 use crate::address_book::report::ConnectionOutcome;
+use crate::address_book::store::{AddressBookStoreHandle, StoreError};
 use crate::addrs::{NodeInfo, NodeInfoError, TransportInfo};
 use crate::watchers::{UpdatesOnly, WatcherReceiver};
 
@@ -303,7 +303,9 @@ pub enum AddressBookError {
 
     /// No store was supplied and no default backend is compiled in.
     #[cfg(not(feature = "sqlite"))]
-    #[error("no address book store provided; supply one with `Builder::store` or enable the `sqlite` feature")]
+    #[error(
+        "no address book store provided; supply one with `Builder::store` or enable the `sqlite` feature"
+    )]
     NoStore,
 
     /// Invalid node info provided.

@@ -3,12 +3,13 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use p2panda_core::{Extensions, Hash, LogId, Operation, SeqNum, Topic, VerifyingKey};
+use p2panda_core::{AnyOperation, Extensions, Hash, LogId, SeqNum, Topic, VerifyingKey};
 use p2panda_store::logs::LogStore;
 use p2panda_store::topics::TopicStore;
 use p2panda_sync::manager::TopicSyncManager;
 use ractor::thread_local::{ThreadLocalActor, ThreadLocalActorSpawner};
 
+use crate::connection_authoriser::ConnectionAuthoriser;
 use crate::gossip::Gossip;
 use crate::iroh_endpoint::Endpoint;
 use crate::sync::actors::SyncManager;
@@ -16,7 +17,7 @@ use crate::sync::log_sync::{LOG_SYNC_PROTOCOL_ID, LogSync, LogSyncError};
 
 pub struct Builder<S, L, E>
 where
-    S: LogStore<Operation<E>, VerifyingKey, L, SeqNum, Hash>
+    S: LogStore<AnyOperation, VerifyingKey, L, SeqNum, Hash>
         + TopicStore<Topic, VerifyingKey, L>
         + Clone
         + Send
@@ -28,12 +29,13 @@ where
     endpoint: Endpoint,
     gossip: Gossip,
     protocol_id: Vec<u8>,
+    connection_authoriser: ConnectionAuthoriser,
     _marker: PhantomData<(L, E)>,
 }
 
 impl<S, L, E> Builder<S, L, E>
 where
-    S: LogStore<Operation<E>, VerifyingKey, L, SeqNum, Hash>
+    S: LogStore<AnyOperation, VerifyingKey, L, SeqNum, Hash>
         + TopicStore<Topic, VerifyingKey, L>
         + Clone
         + Send
@@ -42,11 +44,13 @@ where
     E: Extensions + Send + 'static,
 {
     pub fn new(store: S, endpoint: Endpoint, gossip: Gossip) -> Self {
+        let connection_authoriser = ConnectionAuthoriser::new();
         Self {
             store,
             endpoint,
             gossip,
             protocol_id: LOG_SYNC_PROTOCOL_ID.to_vec(),
+            connection_authoriser,
             _marker: PhantomData,
         }
     }
@@ -64,11 +68,22 @@ where
         self
     }
 
+    pub fn connection_authoriser(mut self, connection_authoriser: ConnectionAuthoriser) -> Self {
+        self.connection_authoriser = connection_authoriser;
+        self
+    }
+
     pub async fn spawn(self) -> Result<LogSync<S, L, E>, LogSyncError<E>> {
         let (actor_ref, actor_task) = {
             let thread_pool = ThreadLocalActorSpawner::new();
 
-            let args = (self.protocol_id, self.store, self.endpoint, self.gossip);
+            let args = (
+                self.protocol_id,
+                self.store,
+                self.endpoint,
+                self.gossip,
+                self.connection_authoriser,
+            );
 
             SyncManager::<TopicSyncManager<Topic, S, L, E>>::spawn(None, args, thread_pool).await?
         };

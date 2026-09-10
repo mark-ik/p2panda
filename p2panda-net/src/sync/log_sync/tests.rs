@@ -4,16 +4,19 @@ use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use futures_util::stream::BoxStream;
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use p2panda_core::logs::Logs;
 use p2panda_core::test_utils::setup_logging;
-use p2panda_core::{Hash, Operation, SeqNum, Topic, VerifyingKey};
+use p2panda_core::{AnyOperation, Hash, Operation, SeqNum, Topic, VerifyingKey};
 use p2panda_net::codec::{into_codec_sink, into_codec_stream};
 use p2panda_store::logs::LogStore;
+use p2panda_store::logs::StreamItem;
 use p2panda_store::topics::TopicStore;
 use p2panda_sync::FromSync;
-use p2panda_sync::protocols::{Logs, TopicLogSyncEvent as Event};
+use p2panda_sync::protocols::TopicLogSyncEvent as Event;
 use p2panda_sync::test_utils::{Peer, TestTopicSyncMessage};
 use p2panda_sync::traits::Protocol;
 use tokio_stream::StreamExt;
@@ -32,14 +35,14 @@ impl ReleaseTrackedStore {
     }
 }
 
-impl LogStore<Operation<()>, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedStore {
+impl LogStore<AnyOperation, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedStore {
     type Error = Infallible;
 
     async fn get_latest_entry(
         &self,
         _author: &VerifyingKey,
         _log_id: &u64,
-    ) -> Result<Option<Operation<()>>, Self::Error> {
+    ) -> Result<Option<AnyOperation>, Self::Error> {
         Ok(None)
     }
 
@@ -47,7 +50,7 @@ impl LogStore<Operation<()>, VerifyingKey, u64, SeqNum, Hash> for ReleaseTracked
         &self,
         _author: &VerifyingKey,
         _log_id: &u64,
-    ) -> Result<Option<Operation<()>>, Self::Error> {
+    ) -> Result<Option<AnyOperation>, Self::Error> {
         Ok(None)
     }
 
@@ -69,14 +72,15 @@ impl LogStore<Operation<()>, VerifyingKey, u64, SeqNum, Hash> for ReleaseTracked
         Ok(None)
     }
 
-    async fn get_log_entries(
+    fn log_entries(
         &self,
         _author: &VerifyingKey,
         _log_id: &u64,
         _after: Option<SeqNum>,
         _until: Option<SeqNum>,
-    ) -> Result<Option<Vec<(Operation<()>, Vec<u8>)>>, Self::Error> {
-        Ok(None)
+    ) -> Result<BoxStream<'static, Result<StreamItem<AnyOperation, u64>, Self::Error>>, Self::Error>
+    {
+        Ok(Box::pin(futures_util::stream::empty()))
     }
 
     async fn prune_entries(
@@ -115,6 +119,18 @@ impl TopicStore<Topic, VerifyingKey, u64> for ReleaseTrackedStore {
         _topic: &Topic,
     ) -> Result<BTreeMap<VerifyingKey, Vec<u64>>, Self::Error> {
         Ok(BTreeMap::new())
+    }
+
+    async fn resolve_topics(
+        &self,
+        _author: &VerifyingKey,
+        _data_id: &u64,
+    ) -> Result<Vec<Topic>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn topics(&self) -> Result<Vec<Topic>, Self::Error> {
+        Ok(Vec::new())
     }
 }
 
