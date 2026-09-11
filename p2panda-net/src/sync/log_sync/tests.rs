@@ -321,6 +321,146 @@ async fn e2e_log_sync() {
 }
 
 #[tokio::test]
+async fn late_manager_syncs_over_an_active_gossip_overlay() {
+    setup_logging();
+
+    let topic: Topic = [7; 32].into();
+    let log_id = 0;
+    let mut bob = TestNode::spawn([21; 32], None).await;
+    let mut alice = TestNode::spawn([20; 32], Some(bob.node_info())).await;
+
+    alice
+        .client
+        .create_operation(b"existing Alice operation", log_id)
+        .await;
+    alice
+        .client
+        .associate(&topic, &HashMap::from([(alice.client_id(), vec![log_id])]))
+        .await;
+    bob.client
+        .create_operation(b"existing Bob operation", log_id)
+        .await;
+    bob.client
+        .associate(&topic, &HashMap::from([(bob.client_id(), vec![log_id])]))
+        .await;
+
+    // These original streams establish and retain the shared gossip overlay.
+    let alice_handle = alice.log_sync.stream(topic, true).await.unwrap();
+    let mut alice_events = alice_handle.subscribe().await.unwrap();
+    let bob_handle = bob.log_sync.stream(topic, true).await.unwrap();
+    let mut bob_events = bob_handle.subscribe().await.unwrap();
+    alice_handle.initiate_session(bob.node_id());
+
+    // Drain the initial sync sequence so the live operation is an explicit
+    // proof that both peers are already neighbours before either late manager.
+    let established = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        for _ in 0..4 {
+            alice_events.next().await.unwrap().unwrap();
+            bob_events.next().await.unwrap().unwrap();
+        }
+        let (header, _, body) = alice
+            .client
+            .create_operation(b"existing-overlay live operation", log_id)
+            .await;
+        alice_handle
+            .publish(Operation {
+                hash: header.hash(),
+                header,
+                body: Some(body),
+            })
+            .unwrap();
+        std::assert_matches!(
+            bob_events.next().await.unwrap(),
+            Ok(FromSync {
+                event: Event::OperationReceived { .. },
+                ..
+            })
+        );
+    })
+    .await;
+    assert!(
+        established.is_ok(),
+        "original peers did not establish a live shared overlay"
+    );
+    let protocol_id = b"p2panda-tests/recreated-manager";
+    let (late_header, _, _) = bob
+        .client
+        .create_operation(b"late manager catch-up", log_id)
+        .await;
+    let late_hash = late_header.hash();
+    let alice_late: LogSync<_, u64, ()> = LogSync::builder(
+        alice.client.store.clone(),
+        alice.endpoint.clone(),
+        alice.gossip.clone(),
+    )
+    .protocol_id(protocol_id)
+    .spawn()
+    .await
+    .unwrap();
+    let bob_late: LogSync<_, u64, ()> = LogSync::builder(
+        bob.client.store.clone(),
+        bob.endpoint.clone(),
+        bob.gossip.clone(),
+    )
+    .protocol_id(protocol_id)
+    .spawn()
+    .await
+    .unwrap();
+    let alice_late_handle = alice_late.stream(topic, true).await.unwrap();
+    let _bob_late_handle = bob_late.stream(topic, true).await.unwrap();
+    let mut late_events = alice_late_handle.subscribe().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let event = late_events
+                .next()
+                .await
+                .expect("late event stream closed")
+                .expect("late event stream failed");
+            if matches!(event, FromSync { event: Event::OperationReceived { operation, .. }, .. }
+                if operation.hash == late_hash)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("late manager must discover existing neighbours without a new neighbour event");
+    drop(late_events);
+
+    // Model a local lane being dropped and immediately reopened on the same
+    // endpoint while its remote peer and shared gossip overlay stay alive.
+    drop(alice_late_handle);
+    drop(alice_late);
+    let (late_header, _, _) = bob
+        .client
+        .create_operation(b"same ALPN catch-up", log_id)
+        .await;
+    let late_hash = late_header.hash();
+    let alice_recreated: LogSync<_, u64, ()> = LogSync::builder(
+        alice.client.store.clone(),
+        alice.endpoint.clone(),
+        alice.gossip.clone(),
+    )
+    .protocol_id(protocol_id)
+    .spawn()
+    .await
+    .unwrap();
+    let recreated_handle = alice_recreated.stream(topic, true).await.unwrap();
+    let mut recreated_events = recreated_handle.subscribe().await.unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let event = recreated_events.next().await.expect("recreated event stream closed").expect("recreated event stream failed");
+            if matches!(event, FromSync { event: Event::OperationReceived { operation, .. }, .. } if operation.hash == late_hash) { break; }
+        }
+    }).await;
+    assert!(
+        received.is_ok(),
+        "recreated same-ALPN manager never received the missed operation"
+    );
+    drop(alice_handle);
+    drop(bob_handle);
+}
+#[tokio::test]
 async fn e2e_three_party_sync() {
     setup_logging();
 

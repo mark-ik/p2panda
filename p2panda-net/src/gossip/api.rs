@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -225,6 +226,24 @@ impl Gossip {
     pub async fn events(&self) -> Result<broadcast::Receiver<GossipEvent>, GossipError> {
         let inner = self.inner.read().await;
         let result = call!(inner.actor_ref, ToGossipManager::Events).map_err(Box::new)?;
+        Ok(result)
+    }
+
+    /// Subscribe to future system events and return this topic's current direct
+    /// neighbours from the same gossip-manager turn.
+    ///
+    /// A new consumer can join an overlay that is already active because a
+    /// different protocol uses the same topic. [`Self::events`] alone cannot
+    /// describe those existing neighbours, because it receives future events
+    /// only. The returned snapshot plus receiver has no gap: an event is
+    /// reflected in the snapshot or delivered to the receiver.
+    pub async fn events_with_neighbours(
+        &self,
+        topic: Topic,
+    ) -> Result<(broadcast::Receiver<GossipEvent>, HashSet<NodeId>), GossipError> {
+        let inner = self.inner.read().await;
+        let result = call!(inner.actor_ref, ToGossipManager::EventsWithNeighbours, topic)
+            .map_err(Box::new)?;
         Ok(result)
     }
 }

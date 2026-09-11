@@ -46,7 +46,7 @@ p2panda-auth = { path = "p2panda-auth", version = "0.7.1", default-features = fa
 p2panda-core = { path = "p2panda-core", version = "0.7.1", default-features = false }
 p2panda-discovery = { path = "p2panda-discovery", version = "0.7.1", default-features = false }
 p2panda-encryption = { path = "p2panda-encryption", version = "0.7.1", default-features = false }
-p2panda-net = { path = "p2panda-net", version = "0.7.1", default-features = false }
+p2panda-net = { package = "mere-p2panda-net", path = "p2panda-net", version = "0.7.1", default-features = false }
 p2panda-spaces = { path = "p2panda-spaces", version = "0.7.1", default-features = false }
 p2panda-store = { path = "p2panda-store", version = "0.7.1", default-features = false }
 p2panda-stream = { path = "p2panda-stream", version = "0.7.1", default-features = false }

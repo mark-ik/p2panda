@@ -156,13 +156,16 @@ where
             "join gossip overlay for peer-sampling",
         );
 
-        // Subscribe to events coming from the gossip actor.
-        let mut events = self.gossip.events().await?;
-
         // Join gossip overlay to use HyParView membership algorithm for peer sampling.
         //
         // This will subscribe us to the gossip topic and add it to the address book.
         let gossip_handle = self.gossip.stream(gossip_topic).await?;
+
+        // A different sync protocol may already hold this gossip topic. In
+        // that case `stream` reuses its active overlay and emits no Joined
+        // event. Capture its current neighbours along with future events so
+        // this manager still begins reconciliation with every live peer.
+        let (mut events, neighbours) = self.gossip.events_with_neighbours(gossip_topic).await?;
 
         // Listen for events of HyParView who entered or left the "active view". This informs with
         // whom we're running sync sessions with.
@@ -212,6 +215,10 @@ where
 
         self.gossip_handles
             .insert(topic, (gossip_handle, gossip_events_handle));
+
+        for node in neighbours {
+            myself.send_message(ToSyncManager::InitiateSync(topic, node))?;
+        }
 
         Ok(())
     }

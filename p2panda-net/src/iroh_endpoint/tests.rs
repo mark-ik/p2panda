@@ -128,7 +128,12 @@ async fn establish_connection() {
     setup_logging();
 
     let mut alice_args = test_args();
-    let bob_args = test_args();
+    let mut bob_args = test_args();
+    // Let the OS allocate ports; random fixed ports can lie in reserved ranges.
+    alice_args.iroh_config.bind_port_v4 = 0;
+    alice_args.iroh_config.bind_port_v6 = 0;
+    bob_args.iroh_config.bind_port_v4 = 0;
+    bob_args.iroh_config.bind_port_v6 = 0;
 
     // Spawn address book (it's a dependency) for both.
     let alice_address_book = AddressBook::builder().spawn().await.unwrap();
@@ -141,7 +146,7 @@ async fn establish_connection() {
     let bob_hook = TestHook { tx: bob_hook_tx };
 
     // Spawn both endpoint actors.
-    let alice_endpoint = Endpoint::builder(alice_address_book)
+    let alice_endpoint = Endpoint::builder(alice_address_book.clone())
         .config(alice_args.iroh_config.clone())
         .signing_key(alice_args.signing_key.clone())
         .hooks(alice_hook)
@@ -163,9 +168,14 @@ async fn establish_connection() {
         .await
         .unwrap();
 
+    bob_endpoint
+        .accept(ECHO_PROTOCOL_ID, EchoProtocol)
+        .await
+        .unwrap();
+
     // Register iroh endpoint address of Alice, so Bob can connect.
     bob_address_book
-        .insert_node_info(alice_args.node_info())
+        .insert_node_info(alice_endpoint.endpoint().await.unwrap().addr().into())
         .await
         .unwrap();
 
@@ -203,6 +213,13 @@ async fn establish_connection() {
             }
         );
     }
+
+    // Alice learned Bob's validated inbound address, so it can reconnect without a ticket.
+    let reverse = alice_endpoint
+        .connect(bob_args.verifying_key, ECHO_PROTOCOL_ID)
+        .await
+        .expect("inbound address should be reusable");
+    reverse.close(0u32.into(), b"bye!");
 
     // Shut down connection and actors.
     connection.close(0u32.into(), b"bye!");

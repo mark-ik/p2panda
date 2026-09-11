@@ -194,6 +194,21 @@ async fn establish_connection(
             );
             debug!("successfully accepted connection");
 
+            // The completed handshake authenticates remote_id; retain its observed transport
+            // only as an endpoint-local hint, separate from peer-signed address records.
+            let observed = iroh::EndpointAddr {
+                id: connection.remote_id(),
+                addrs: connection
+                    .paths()
+                    .iter()
+                    .map(|path| path.remote_addr().clone())
+                    .collect(),
+            };
+            let _ = endpoint_ref.send_message(ToIrohEndpoint::Observe(
+                to_verifying_key(connection.remote_id()),
+                observed,
+            ));
+
             // Inform endpoint actor about this successful, incoming connection attempt.
             let _ = endpoint_ref.send_message(ToIrohEndpoint::Report {
                 remote_node_id: to_verifying_key(connection.remote_id()),

@@ -2,10 +2,10 @@
 
 //! Actor managing an endpoint to establish direct or relayed connections over the Internet
 //! Protocol using the "iroh" crate.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh::endpoint::{QuicTransportConfig, presets};
 use iroh::protocol::DynProtocolHandler;
@@ -72,6 +72,9 @@ pub enum ToIrohEndpoint {
     /// We've received a connection attempt from a remote iroh endpoint.
     Incoming(iroh::endpoint::Incoming),
 
+    /// Retain a validated address observed on an authenticated inbound connection.
+    Observe(NodeId, iroh::EndpointAddr),
+
     /// Inform endpoint actor about this successful, incoming connection attempt.
     ///
     /// It will help us to remove any "stale" status of this node since it successfully contacted
@@ -97,6 +100,7 @@ pub struct IrohState {
     accept_handle: Option<JoinHandle<()>>,
     watch_addr_handle: Option<JoinHandle<()>>,
     worker_pool: ThreadLocalActorSpawner,
+    observed_addresses: HashMap<NodeId, (Instant, iroh::EndpointAddr)>,
 }
 
 pub type IrohEndpointArgs = (
@@ -140,6 +144,7 @@ impl ThreadLocalActor for IrohEndpoint {
             accept_handle: None,
             watch_addr_handle: None,
             worker_pool: ThreadLocalActorSpawner::new(),
+            observed_addresses: HashMap::new(),
         })
     }
 
@@ -214,7 +219,7 @@ impl ThreadLocalActor for IrohEndpoint {
                     // In the event of failure, this error is not included
                     // as part of the ractor error returned to the caller.
                     // We log it here explicitly to assist with debugging.
-                    .inspect_err(|err| error!("{err}"))?;
+                    .inspect_err(|err| error!(?socket_address_v4, ?socket_address_v6, error = ?err, "endpoint bind failed"))?;
 
                 // Handle incoming connection requests from other nodes.
                 let accept_handle = {
@@ -255,13 +260,18 @@ impl ThreadLocalActor for IrohEndpoint {
                     }
                 };
 
-                let Some(node_info) = result else {
-                    let _ = reply.send(Err(ConnectError::TransportInfoMissing(node_id)));
-                    return Ok(());
-                };
-
-                // Check if node info contains address information for iroh transport.
-                let Ok(endpoint_addr) = iroh::EndpointAddr::try_from(node_info) else {
+                // Peer-signed address information takes precedence. An authenticated inbound
+                // path is a local dial hint, never a peer-signed discovery record.
+                let endpoint_addr = result
+                    .and_then(|info| iroh::EndpointAddr::try_from(info).ok())
+                    .or_else(|| {
+                        state
+                            .observed_addresses
+                            .get(&node_id)
+                            .filter(|(seen, _)| seen.elapsed() < state.config.observed_address_ttl)
+                            .map(|(_, address)| address.clone())
+                    });
+                let Some(endpoint_addr) = endpoint_addr else {
                     let _ = reply.send(Err(ConnectError::TransportInfoMissing(node_id)));
                     return Ok(());
                 };
@@ -291,6 +301,27 @@ impl ThreadLocalActor for IrohEndpoint {
                     state.worker_pool.clone(),
                 )
                 .await?;
+            }
+            ToIrohEndpoint::Observe(node_id, endpoint_addr) => {
+                if state.config.observed_address_capacity == 0 || endpoint_addr.addrs.is_empty() {
+                    return Ok(());
+                }
+                state
+                    .observed_addresses
+                    .retain(|_, (seen, _)| seen.elapsed() < state.config.observed_address_ttl);
+                if !state.observed_addresses.contains_key(&node_id)
+                    && state.observed_addresses.len() >= state.config.observed_address_capacity
+                    && let Some(oldest) = state
+                        .observed_addresses
+                        .iter()
+                        .min_by_key(|(_, (seen, _))| *seen)
+                        .map(|(node, _)| *node)
+                {
+                    state.observed_addresses.remove(&oldest);
+                }
+                state
+                    .observed_addresses
+                    .insert(node_id, (Instant::now(), endpoint_addr));
             }
             ToIrohEndpoint::Incoming(incoming) => {
                 // This actor runs as long as the protocol session holds the "accept" method. If

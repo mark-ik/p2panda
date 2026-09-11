@@ -76,6 +76,13 @@ pub enum ToGossipManager {
     /// Subscribe to system events.
     Events(RpcReplyPort<broadcast::Receiver<GossipEvent>>),
 
+    /// Subscribe to future system events and return the topic's current direct
+    /// neighbours from the same actor turn.
+    EventsWithNeighbours(
+        Topic,
+        RpcReplyPort<(broadcast::Receiver<GossipEvent>, HashSet<NodeId>)>,
+    ),
+
     /// Gracefully shut down the gossip actor, cleaning up connection state.
     Shutdown,
 }
@@ -362,6 +369,11 @@ impl ThreadLocalActor for GossipManager {
             }
             ToGossipManager::Events(reply) => {
                 let _ = reply.send(state.events_tx.subscribe());
+            }
+            ToGossipManager::EventsWithNeighbours(topic, reply) => {
+                let events = state.events_tx.subscribe();
+                let neighbours = state.neighbours.get(&topic).cloned().unwrap_or_default();
+                let _ = reply.send((events, neighbours));
             }
             ToGossipManager::Shutdown => {
                 if let Some(gossip) = state.gossip.take()
