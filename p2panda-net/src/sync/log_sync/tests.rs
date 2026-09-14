@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use futures_util::stream::BoxStream;
 use iroh::Endpoint;
@@ -168,6 +169,40 @@ async fn shutdown_waits_until_topic_managers_release_the_store() {
         store.live_handles(),
         1,
         "shutdown returns only after every actor-owned store handle is released"
+    );
+}
+
+#[tokio::test]
+async fn idle_shutdown_returns_promptly() {
+    setup_logging();
+
+    let node = TestNode::spawn_with_args(test_args(), None).await;
+    let store = ReleaseTrackedStore::default();
+    let log_sync = LogSync::<ReleaseTrackedStore, u64, ()>::builder(
+        store.clone(),
+        node.endpoint.clone(),
+        node.gossip.clone(),
+    )
+    .protocol_id(b"p2panda-tests/idle-shutdown")
+    .spawn()
+    .await
+    .unwrap();
+
+    let _handle = log_sync.stream(Topic::random(), true).await.unwrap();
+
+    let start = Instant::now();
+    log_sync.shutdown().await.unwrap();
+    let elapsed = start.elapsed();
+    println!("idle shutdown took {elapsed:?}");
+
+    assert_eq!(
+        store.live_handles(),
+        1,
+        "shutdown released every store handle"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "an idle poller must not hold shutdown open: took {elapsed:?}"
     );
 }
 

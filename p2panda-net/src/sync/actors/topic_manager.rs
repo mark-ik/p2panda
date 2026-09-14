@@ -90,6 +90,8 @@ where
     actor_session_id_map: HashMap<ActorId, SyncSessionId>,
     next_session_id: SyncSessionId,
     sync_poller_actor: ActorRef<ToSyncPoller>,
+    /// Tells the poller to stop waiting for events so it can be drained.
+    sync_poller_finish: Option<oneshot::Sender<()>>,
     endpoint: Endpoint,
     pool: ThreadLocalActorSpawner,
 }
@@ -136,9 +138,14 @@ where
 
         // The sync poller actor lives as long as the manager and only terminates due to the
         // manager actor itself terminating.
-        let (sync_poller_actor, _) =
-            SyncPoller::spawn_linked(None, (event_stream, sender), myself.into(), pool.clone())
-                .await?;
+        let (sync_poller_finish, finish_rx) = oneshot::channel();
+        let (sync_poller_actor, _) = SyncPoller::spawn_linked(
+            None,
+            (event_stream, sender, finish_rx),
+            myself.into(),
+            pool.clone(),
+        )
+        .await?;
 
         Ok(TopicManagerState {
             topic,
@@ -150,6 +157,7 @@ where
             next_session_id: 0,
             actor_session_id_map: HashMap::new(),
             sync_poller_actor,
+            sync_poller_finish: Some(sync_poller_finish),
             endpoint,
             pool,
         })
@@ -160,6 +168,19 @@ where
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
+        // With no sync session actors left nothing can push new events onto the poller's stream,
+        // so tell it to forward whatever is already buffered and terminate. Without this the
+        // poller blocks on a stream that only ends once our state is dropped, which happens after
+        // this hook returns, so the drain below always ran out its full timeout.
+        //
+        // While sessions are still running we leave the poller alone and let the timeout bound the
+        // drain, as before.
+        if state.actor_session_id_map.is_empty()
+            && let Some(finish) = state.sync_poller_finish.take()
+        {
+            let _ = finish.send(());
+        }
+
         // Drain the sync poller to ensure that all sync session messages are forwarded before it
         // is shut down. A timeout is included to ensure that the drain call cannot wait forever.
         state
