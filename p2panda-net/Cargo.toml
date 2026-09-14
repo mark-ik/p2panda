@@ -1,6 +1,6 @@
 [package]
 name = "mere-p2panda-net"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2024"
 authors = [
   "adz <x12@adz.garden>",
