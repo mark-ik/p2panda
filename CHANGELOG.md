@@ -26,6 +26,7 @@ Highlights are marked with a pancake 🥞
 - node: Membership change validation in Group API [#1336](https://github.com/p2panda/p2panda/pull/1336)
 - node: Membership change validation in Space API [#1292](https://github.com/p2panda/p2panda/pull/1292)
 - node: Task for repairing spaces [#1277](https://github.com/p2panda/p2panda/pull/1277)
+- node: Configurable egress to "publish" and "import" locally forged operations [#1431](https://github.com/p2panda/p2panda/pull/1431)
 - spaces: Compute and return events from local methods [#1290](https://github.com/p2panda/p2panda/pull/1290)
 - spaces: Introduce local stream import [#1296](https://github.com/p2panda/p2panda/pull/1296)
 - spaces: Safe key bundle registration by cross-signing X3DH identity- and verifying-keys [#1332](https://github.com/p2panda/p2panda/pull/1332)
@@ -45,6 +46,8 @@ Highlights are marked with a pancake 🥞
 - sync: Method for streaming log ranges from the store [#1393](https://github.com/p2panda/p2panda/pull/1393)
 - sync: Method to resolve log heights from topic [#1405](https://github.com/p2panda/p2panda/pull/1405)
 - sync: Re-export -stream ingest_operation in `api` module [#1406](https://github.com/p2panda/p2panda/pull/1406)
+- stream: Forward events of already processed operations in spaces processor [#1430](https://github.com/p2panda/p2panda/pull/1430)
+- p2panda: Support optionally adding spaces events when constructing processor Event [#1430](https://github.com/p2panda/p2panda/pull/1430)
 
 ### Changed
 
@@ -58,9 +61,12 @@ Highlights are marked with a pancake 🥞
 - store: sqlx 0.9.0, use safer query builder [#1322](https://github.com/p2panda/p2panda/pull/1322)
 - core: Infallible conversion from Operation<E> into AnyOperation [#1389](https://github.com/p2panda/p2panda/pull/1389)
 - store: Use `AnyOperation` on `LogStore` [#1391](https://github.com/p2panda/p2panda/pull/1391)
+- sync: Update examples to use new `api` module [#1413](https://github.com/p2panda/p2panda/pull/1413)
+- p2panda: Use unique network ids in API tests [#1425](https://github.com/p2panda/p2panda/pull/1425)
 
-### Fixes
+### Fixed
 
+- core: Make `cbor_decode` lenient [#1429](https://github.com/p2panda/p2panda/pull/1429)
 - node: Allow event processing to handle out-of-order buffering by separating i/o streams and preserve input ordering [#1271](https://github.com/p2panda/)
 - node: Unblock task tracker by introducing "pass-through" events coming from orderer [#1267](https://github.com/p2panda/p2panda/pull/1267)
 - spaces: Deterministic deserialization of `SpacesArgs` [#1264](https://github.com/p2panda/p2panda/pull/1264)

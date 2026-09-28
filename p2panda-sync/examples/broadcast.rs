@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Sync over "broadcast" transports with mesh-network topologies.
+//! Sync over broadcast-based transports with mesh network topologies.
 //!
-//! This example shows how one could integrate the p2panda sync protocol into any more
-//! broadcast-like transport or mesh-network topology, for example on top of LoRa or BLE
-//! Advertisements.
+//! This example shows how a sync protocol can be built for any broadcast-like transport or
+//! mesh network topology using p2panda append-only logs and helper methods. Such a sync protocol
+//! might run on top of LoRa or BLE Advertisements, for example.
 //!
-//! ## Mesh-Network
+//! ## Mesh Network
 //!
-//! The approach taken here is a simple "flooding" mesh protocol (some people might call this a
-//! routing technique) where each node "repeats" any received message. With the help of checking and
-//! storing every message's hash digest in a ring buffer when repeating we make sure to avoid loops.
+//! The message delivery approach taken here is a simple flooding mesh protocol, without any routing
+//! logic, where each node "repeats" every message it receives. The hash digest of each message is
+//! stored in a ring buffer after each broadcast. Received messages are checked against this buffer
+//! and only broadcast if they have not been sent within recorded history. This deduplication logic
+//! helps to avoid feedback loops with neighbouring nodes.
 //!
-//! ## Possible improvements
+//! ## Possible Improvements
 //!
 //! 1. This example can easily be extended with a more robust store and forward approach where every
 //!    node keeps a cache of the last n operations around, independent of if they are interested in
@@ -34,18 +36,15 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use p2panda_core::logs::{LogHeights, compare};
 use p2panda_core::traits::Digest;
 use p2panda_core::{AnyOperation, Hash, Operation, SeqNum, SigningKey, Topic, VerifyingKey};
-use p2panda_store::topics::TopicStore;
-use p2panda_store::{SqliteError, SqliteStore};
-use p2panda_sync::api::{OperationStream, StreamItem, ingest_operation, log_heights, log_ranges};
+use p2panda_store::SqliteStore;
+use p2panda_sync::api::{LogEntry, compare_logs, ingest_operation, log_ranges, topic_log_heights};
 use p2panda_sync::dedup::DeduplicationBuffer;
 use p2panda_sync::protocols::ShortFormat;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
-use crate::common::create_operation;
+use crate::common::{CustomExtensions, LogId, create_operation};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -69,10 +68,10 @@ async fn main() -> Result<()> {
         icebear.id().fmt_short()
     );
 
-    // Publishing new operations will also automatically subscribe to the topic.
+    // Publish new operations and automatically subscribe to the topic.
     panda.publish(topic, b"Hello!").await?;
 
-    // Expresses interest in a topic and will include it in announcements from now on.
+    // Express interest in a topic and include it in any sync announcements from now on.
     racoon.subscribe(topic).await;
     icebear.subscribe(topic).await;
 
@@ -205,15 +204,6 @@ impl Digest<Hash> for Message {
     }
 }
 
-type LogId = Hash;
-
-type LogIds = BTreeMap<VerifyingKey, Vec<LogId>>;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CustomExtensions {
-    log_id: LogId,
-}
-
 struct Node {
     topics: Arc<RwLock<HashSet<Topic>>>,
     signing_key: SigningKey,
@@ -247,8 +237,10 @@ impl Node {
                         continue;
                     }
 
-                    // Only look at messages for topics we are interested in.
+                    // We only want to process announcement messages for topics we're interested
+                    // in.
                     let my_topics = topics.read().await;
+
                     let topic = match &message {
                         Message::Operation(topic, _) => topic,
                         Message::Announcement(announcement) => &announcement.topic,
@@ -265,7 +257,7 @@ impl Node {
 
                                 // TODO: Clone can be removed after OooBuffer PR was merged.
                                 let Ok(operation) =
-                                    Operation::<CustomExtensions>::try_from(operation.clone())
+                                    Operation::<CustomExtensions>::try_from(operation.to_owned())
                                 else {
                                     // Custom header extensions did not match expected format.
                                     continue;
@@ -287,20 +279,18 @@ impl Node {
                                 }
                             }
                             Message::Announcement(announcement) => {
-                                let Ok(mut operations) = compute_diff(
+                                let our_log_heights =
+                                    topic_log_heights(&store, topic).await.unwrap();
+                                let mut operations = log_ranges(
                                     &store,
-                                    announcement.topic,
-                                    &announcement.log_heights,
-                                )
-                                .await
-                                else {
-                                    continue;
-                                };
+                                    compare_logs(&our_log_heights, &announcement.log_heights),
+                                );
 
                                 while let Some(result) = operations.next().await {
-                                    let StreamItem {
+                                    let LogEntry {
                                         entry: operation, ..
                                     } = result.unwrap();
+
                                     mesh.flood(Message::Operation(*topic, operation)).await;
                                 }
                             }
@@ -349,12 +339,10 @@ impl Node {
         let topics = self.topics.read().await;
 
         for topic in topics.iter() {
-            let all_log_heights = get_topic_log_heights(&self.store, &topic).await?;
-
             let announcement = Announcement {
                 topic: *topic,
                 node_id: self.id(),
-                log_heights: all_log_heights,
+                log_heights: topic_log_heights(&self.store, topic).await?,
             };
 
             println!(
@@ -389,26 +377,4 @@ impl Node {
 
         Ok(())
     }
-}
-
-// TODO: A lot of methods we probably want to move somewhere else:
-
-async fn compute_diff(
-    store: &SqliteStore,
-    topic: Topic,
-    their_log_heights: &LogHeights<VerifyingKey, LogId>,
-) -> Result<OperationStream<LogId, SqliteError>> {
-    let our_log_heights = get_topic_log_heights(&store, &topic).await?;
-    let diff = compare(&our_log_heights, &their_log_heights);
-    Ok(log_ranges(store, diff))
-}
-
-async fn get_topic_log_heights(
-    store: &SqliteStore,
-    topic: &Topic,
-) -> std::result::Result<LogHeights<VerifyingKey, LogId>, SqliteError> {
-    let logs: LogIds = store.resolve(topic).await?;
-    let log_heights = log_heights(store, &logs).await?;
-
-    Ok(log_heights)
 }
