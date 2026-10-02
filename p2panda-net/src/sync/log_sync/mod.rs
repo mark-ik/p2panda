@@ -6,7 +6,7 @@ mod builder;
 #[cfg(test)]
 mod tests;
 
-pub use api::{LogSync, LogSyncError};
+pub use api::{LogSync, LogSyncError, LogSyncRejected};
 pub use builder::Builder;
 
 /// Default sync protocol identifier (ALPN), used when a builder does not name

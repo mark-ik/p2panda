@@ -13,24 +13,26 @@ use p2panda_core::VerifyingKey;
 use p2panda_core::traits::ShortFormat;
 use p2panda_spaces::{ActorId, GroupContext, GroupId, MemberId};
 use thiserror::Error;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::egress::{EgressError, EgressHandle, SubmitError, SubmitFuture};
 use crate::node::CreateStreamError;
 use crate::processor::ProcessorError;
 use crate::spaces::GroupActor;
 use crate::spaces::types::{
     AuthCapabilities, InnerGroup, InnerGroupError, InnerGroupEvent, NoBody, SpacesManagerError,
 };
-use crate::streams::{
-    ImportError, LocalStreamFuture, StreamPublisher, StreamSubscription, SystemEvent,
-};
+use crate::streams::{StreamPublisher, StreamSubscription, SystemEvent};
 
 #[derive(Debug)]
 pub struct Group {
     inner: InnerGroup,
+    egress_handle: EgressHandle,
+    // TODO: can we remove the tx from here now? It is not held anywhere else.
+    #[allow(unused)]
     tx: StreamPublisher<NoBody>,
     #[allow(unused)]
     rx: StreamSubscription<NoBody>,
@@ -49,6 +51,7 @@ impl Drop for Group {
 impl Group {
     pub(crate) fn new(
         inner: InnerGroup,
+        egress_handle: EgressHandle,
         tx: StreamPublisher<NoBody>,
         rx: StreamSubscription<NoBody>,
         mut in_event_stream_rx: broadcast::Receiver<SystemEvent>,
@@ -80,6 +83,7 @@ impl Group {
 
         Self {
             inner,
+            egress_handle,
             tx,
             rx,
             event_stream_rx: RwLock::new(out_event_stream_rx),
@@ -123,7 +127,7 @@ impl Group {
             err,
         })?;
 
-        let (_, message, _events) = self
+        let output = self
             .inner
             .add(
                 actor,
@@ -134,11 +138,10 @@ impl Group {
             )
             .await?;
 
+        // TODO: persist state and dispatch enriched event.
         let processed = self
-            .tx
-            .import_local(futures_util::stream::once(async {
-                message.into_operation()
-            }))
+            .egress_handle
+            .dispatch(output.message.into_operation(), self.id().into())
             .await?;
 
         Ok(GroupFuture {
@@ -163,13 +166,12 @@ impl Group {
             }
         })?;
 
-        let (_, message, _) = self.inner.remove(actor).await?;
+        let output = self.inner.remove(actor).await?;
 
+        // TODO: persist state and dispatch enriched event.
         let processed = self
-            .tx
-            .import_local(futures_util::stream::once(async {
-                message.into_operation()
-            }))
+            .egress_handle
+            .dispatch(output.message.into_operation(), self.id().into())
             .await?;
 
         Ok(GroupFuture {
@@ -212,7 +214,7 @@ impl From<Group> for ActorId {
 
 pub struct GroupFuture {
     pub(crate) group_id: ActorId,
-    pub(crate) processed: LocalStreamFuture,
+    pub(crate) processed: SubmitFuture,
 }
 
 impl GroupFuture {
@@ -222,8 +224,7 @@ impl GroupFuture {
 }
 
 impl Future for GroupFuture {
-    // TODO: Processing result?
-    type Output = Result<(), oneshot::error::RecvError>;
+    type Output = Result<(), EgressError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.processed.poll_unpin(cx)
@@ -315,7 +316,10 @@ pub enum GroupError {
     Manager(#[from] SpacesManagerError),
 
     #[error(transparent)]
-    Import(#[from] ImportError),
+    Submit(#[from] SubmitError),
+
+    #[error(transparent)]
+    Egress(#[from] EgressError),
 
     #[error(transparent)]
     CreateStream(#[from] CreateStreamError),
@@ -338,7 +342,7 @@ pub enum AddGroupMemberError {
     Group(#[from] InnerGroupError),
 
     #[error(transparent)]
-    Import(#[from] ImportError),
+    Submit(#[from] SubmitError),
 }
 
 #[derive(Debug, Error)]
@@ -358,5 +362,5 @@ pub enum RemoveGroupMemberError {
     Group(#[from] InnerGroupError),
 
     #[error(transparent)]
-    Import(#[from] ImportError),
+    Submit(#[from] SubmitError),
 }

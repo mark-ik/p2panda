@@ -13,8 +13,8 @@ use p2panda_core::logs::Logs;
 use p2panda_core::test_utils::setup_logging;
 use p2panda_core::{AnyOperation, Hash, Operation, SeqNum, Topic, VerifyingKey};
 use p2panda_net::codec::{into_codec_sink, into_codec_stream};
+use p2panda_store::logs::LogEntry;
 use p2panda_store::logs::LogStore;
-use p2panda_store::logs::StreamItem;
 use p2panda_store::topics::TopicStore;
 use p2panda_sync::FromSync;
 use p2panda_sync::protocols::TopicLogSyncEvent as Event;
@@ -79,7 +79,7 @@ impl LogStore<AnyOperation, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedS
         _log_id: &u64,
         _after: Option<SeqNum>,
         _until: Option<SeqNum>,
-    ) -> Result<BoxStream<'static, Result<StreamItem<AnyOperation, u64>, Self::Error>>, Self::Error>
+    ) -> Result<BoxStream<'static, Result<LogEntry<AnyOperation, u64>, Self::Error>>, Self::Error>
     {
         Ok(Box::pin(futures_util::stream::empty()))
     }

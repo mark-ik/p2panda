@@ -11,6 +11,7 @@ Highlights are marked with a pancake 🥞
 
 ### Added
 
+- net: `SyncHook` intercepting sync sessions to accept or reject them [#1451](https://github.com/p2panda/p2panda/pull/1451)
 - net: Introduce an `Authoriser` for maintaining and enforcing allow- and blocklists [#1321](https://github.com/p2panda/p2panda/pull/1321)
 - node: API for promoting and demoting space members [#1311](https://github.com/p2panda/p2panda/pull/1311)
 - node: Allow graceful closure of sync sessions [#1307](https://github.com/p2panda/p2panda/pull/1307)
@@ -26,6 +27,8 @@ Highlights are marked with a pancake 🥞
 - node: Membership change validation in Group API [#1336](https://github.com/p2panda/p2panda/pull/1336)
 - node: Membership change validation in Space API [#1292](https://github.com/p2panda/p2panda/pull/1292)
 - node: Task for repairing spaces [#1277](https://github.com/p2panda/p2panda/pull/1277)
+- node: Configurable egress to "publish" and "import" locally forged operations [#1431](https://github.com/p2panda/p2panda/pull/1431)
+- node: Support optionally adding spaces events when constructing processor Event [#1430](https://github.com/p2panda/p2panda/pull/1430)
 - spaces: Compute and return events from local methods [#1290](https://github.com/p2panda/p2panda/pull/1290)
 - spaces: Introduce local stream import [#1296](https://github.com/p2panda/p2panda/pull/1296)
 - spaces: Safe key bundle registration by cross-signing X3DH identity- and verifying-keys [#1332](https://github.com/p2panda/p2panda/pull/1332)
@@ -39,12 +42,14 @@ Highlights are marked with a pancake 🥞
 - stream: Move orderer processor from node to stream [#1312](https://github.com/p2panda/p2panda/pull/1312)
 - stream: Out-of-order buffer for validating & inserting operations [#1402](https://github.com/p2panda/p2panda/pull/1402)
 - stream: Add `validate_operation` method checking against store [#1417](https://github.com/p2panda/p2panda/pull/1417)
+- stream: Namespaced items to allow multiple orderer states [#1460](https://github.com/p2panda/p2panda/pull/1460)
 - node: ConnectionAuthoriserHook updating authoriser based on space membership [#1359](https://github.com/p2panda/p2panda/pull/1359)
 - node: E2EE CLI chat example using spaces API [#1288](https://github.com/p2panda/p2panda/pull/1288)
 - sync: `api` module with useful methods to hack your own sync protocols [#1393](https://github.com/p2panda/p2panda/pull/1393)
 - sync: Method for streaming log ranges from the store [#1393](https://github.com/p2panda/p2panda/pull/1393)
 - sync: Method to resolve log heights from topic [#1405](https://github.com/p2panda/p2panda/pull/1405)
 - sync: Re-export -stream ingest_operation in `api` module [#1406](https://github.com/p2panda/p2panda/pull/1406)
+- stream: Forward events of already processed operations in spaces processor [#1430](https://github.com/p2panda/p2panda/pull/1430)
 
 ### Changed
 
@@ -53,17 +58,26 @@ Highlights are marked with a pancake 🥞
 - node: Make `Group` sendsync [#1306](https://github.com/p2panda/p2panda/pull/1306)
 - node: Move repair task out of stream [#1347](https://github.com/p2panda/p2panda/pull/1347)
 - node: Use random network ids in tests [#1360](https://github.com/p2panda/p2panda/pull/1360)
+- node: Use unique network ids in API tests [#1425](https://github.com/p2panda/p2panda/pull/1425)
 - spaces: Only emit membership change events if local user is space member [#1304](https://github.com/p2panda/p2panda/pull/1304)
 - spaces: Remove auth resolver generic parameter [#1298](https://github.com/p2panda/p2panda/pull/1298)
 - store: sqlx 0.9.0, use safer query builder [#1322](https://github.com/p2panda/p2panda/pull/1322)
 - core: Infallible conversion from Operation<E> into AnyOperation [#1389](https://github.com/p2panda/p2panda/pull/1389)
 - store: Use `AnyOperation` on `LogStore` [#1391](https://github.com/p2panda/p2panda/pull/1391)
+- sync: Update examples to use new `api` module [#1413](https://github.com/p2panda/p2panda/pull/1413)
+- net: Separate sync- from connection authoriser [#1437](https://github.com/p2panda/p2panda/pull/1437)
+- net: Update iroh `v1.0.3` -> `v1.3.0` [#1465](https://github.com/p2panda/p2panda/pull/1465)
+- spaces: Return output structs from public APIs [#1453](https://github.com/p2panda/p2panda/pull/1453)
+- node: Remove redundant authoriser updates [#1455](https://github.com/p2panda/p2panda/pull/1455)
 
-### Fixes
+### Fixed
 
+- core: Make `cbor_decode` lenient [#1429](https://github.com/p2panda/p2panda/pull/1429)
 - node: Allow event processing to handle out-of-order buffering by separating i/o streams and preserve input ordering [#1271](https://github.com/p2panda/)
 - node: Unblock task tracker by introducing "pass-through" events coming from orderer [#1267](https://github.com/p2panda/p2panda/pull/1267)
+- node: Manage separate orderer state per topic stream [#1461](https://github.com/p2panda/p2panda/pull/1461)
 - spaces: Deterministic deserialization of `SpacesArgs` [#1264](https://github.com/p2panda/p2panda/pull/1264)
+- spaces: Fix calculation of historically removed members [#1455](https://github.com/p2panda/p2panda/pull/1455)
 
 ## [0.7.1] - 21/08/2026
 

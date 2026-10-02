@@ -19,21 +19,19 @@ pub use p2panda_auth::AccessLevel;
 pub use p2panda_spaces::manager::ManagerError;
 pub use p2panda_spaces::{ActorId, GroupContext, GroupId, MemberId, SpaceContext, SpaceId};
 
-pub(crate) use authoriser::ConnectionAuthoriserHook;
+pub(crate) use authoriser::SyncAuthoriserHook;
 pub(crate) use forge::{group_log_id, member_log_id};
 pub use group::{
     AddGroupMemberError, Group, GroupError, GroupEvent, GroupFuture, RemoveGroupMemberError,
 };
 pub use member::{GroupActor, Member, MemberError};
-pub(crate) use member::{
-    KeyBundleTask, KeyBundleTaskCommand, KeyBundleTaskSender, MemberAssociationHook,
-};
+pub(crate) use member::{KeyBundleTask, MemberAssociationHook};
 pub(crate) use repair::{DEFAULT_REPAIR_STRATEGY, RepairError, RepairTask};
-pub(crate) use space::spaces_stream;
 pub use space::{
-    AddSpaceMemberError, PublishSpaceError, RemoveSpaceMemberError, Space, SpaceFuture,
-    SpaceSubscription,
+    AddSpaceMemberError, PublishSpaceError, RemoveSpaceMemberError, Space, SpaceEgressError,
+    SpaceFuture, SpaceSubscription,
 };
+pub(crate) use space::{dispatch_spaces_events, spaces_stream};
 pub use types::{InnerGroupEvent, SpacesManagerError};
 
 use crate::Credentials;

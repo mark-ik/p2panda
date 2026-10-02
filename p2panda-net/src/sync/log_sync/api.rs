@@ -166,3 +166,17 @@ pub enum LogSyncError<E> {
     #[error("joining logsync actor task: {0}")]
     ActorTask(String),
 }
+
+#[derive(Debug, Error)]
+#[error("sync session was rejected: {reason}")]
+pub struct LogSyncRejected {
+    reason: String,
+}
+
+impl LogSyncRejected {
+    pub fn new(reason: &str) -> Self {
+        Self {
+            reason: reason.to_string(),
+        }
+    }
+}

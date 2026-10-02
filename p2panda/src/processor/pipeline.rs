@@ -207,7 +207,10 @@ where
                     // Prepare event processing pipeline.
                     let ingest =
                         Ingest::<SqliteStore, Event<L, E, TP>, L, E, TP>::new(store.clone());
-                    let orderer = Orderer::<SqliteStore, Event<L, E, TP>, E>::new(store.clone());
+                    let orderer = Orderer::<SqliteStore, Event<L, E, TP>, E>::from_namespace(
+                        store.clone(),
+                        pipeline_id.to_string(),
+                    );
                     let log_prune = LogPrune::<SqliteStore, Event<L, E, TP>, L>::new(store.clone());
                     let spaces = {
                         let spaces_store = SqliteSpacesStore::new(store);
@@ -469,10 +472,11 @@ mod tests {
         let result = pipeline
             .process(Event::new(
                 operation.clone(),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             ))
             .await;
@@ -487,10 +491,11 @@ mod tests {
         let result = pipeline
             .process(Event::new(
                 operation.clone(),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             ))
             .await;
@@ -533,10 +538,11 @@ mod tests {
 
             let mut event = Event::new(
                 operation.clone(),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             );
 
@@ -590,10 +596,11 @@ mod tests {
         let event_1 = {
             let mut event = Event::new(
                 log_icebear.operation(b"op", ()),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             );
             event.orderer_args = OrdererArgs::Process {
@@ -605,10 +612,11 @@ mod tests {
         let event_2 = {
             let mut event = Event::new(
                 log_panda.operation(b".. or no-op", ()),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             );
             event.orderer_args = OrdererArgs::Process {
@@ -620,10 +628,11 @@ mod tests {
         let event_3 = {
             let mut event = Event::new(
                 log_penguin.operation(b"that's the question", ()),
-                Source::LocalStore,
+                Source::Egress,
                 LogId::from_topic(topic),
                 topic,
                 PruneFlag::default(),
+                None,
                 None,
             );
             event.orderer_args = OrdererArgs::Process {

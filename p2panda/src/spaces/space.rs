@@ -12,59 +12,45 @@ use p2panda_auth::{Access, AccessLevel};
 use p2panda_core::Hash;
 use p2panda_core::cbor::{EncodeError, encode_cbor};
 use p2panda_core::traits::ShortFormat;
-use p2panda_net::connection_authoriser::ConnectionAuthoriser;
 use p2panda_spaces::manager::GLOBAL_GROUPS_CONTEXT_ID;
-use p2panda_spaces::space::SpacesState;
-use p2panda_spaces::{ActorId, AuthGroupState, MemberId, SpaceId, SpacesStoreState};
+use p2panda_spaces::space::SpaceOutput;
+use p2panda_spaces::{ActorId, MemberId, SpaceId, SpacesStoreState};
 use p2panda_store::groups::GroupsStore;
 use p2panda_store::spaces::{SpacesStore, SqliteSpacesStore};
 use p2panda_store::{SqliteError, SqliteStore, tx};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::oneshot;
 use tokio::sync::oneshot::error::RecvError;
-use tracing::error;
 
+use crate::egress::{EgressError, EgressHandle, SubmitError, SubmitFuture};
 use crate::operation::Extensions;
-use crate::spaces::authoriser::update_authoriser;
 use crate::spaces::member::associate_members;
 use crate::spaces::message::SpacesMessage;
-use crate::spaces::types::{AuthCapabilities, InnerSpace, InnerSpaceError, SpacesManagerError};
-use crate::spaces::{KeyBundleTaskCommand, KeyBundleTaskSender, RepairError, RepairTask};
-use crate::streams::{
-    CloseError, ImportError, LocalStreamFuture, StreamEvent, StreamPublisher, StreamSubscription,
-    to_stream_event, to_system_event,
+use crate::spaces::types::{
+    AuthCapabilities, InnerSpace, InnerSpaceError, SpacesEvent, SpacesManagerError,
 };
+use crate::spaces::{RepairError, RepairTask};
+use crate::streams::{CloseError, StreamEvent, StreamPublisher, StreamSubscription};
 
 /// Wraps topic stream and returns the pub/sub pair of a more specialised spaces stream.
 pub(crate) fn spaces_stream<M>(
     inner: InnerSpace,
     store: SqliteStore,
     repair_task: RepairTask,
-    key_bundle_task_tx: KeyBundleTaskSender,
+    egress_handle: EgressHandle,
     tx: StreamPublisher<M>,
     rx: StreamSubscription<M>,
-    // TODO: Only required until https://github.com/p2panda/p2panda/issues/1362 is resolved.
-    connection_authoriser: ConnectionAuthoriser,
 ) -> (Space<M>, SpaceSubscription<M>)
 where
     M: Serialize,
 {
-    if let Err(err) = key_bundle_task_tx.send(KeyBundleTaskCommand::AddStream(
-        inner.id(),
-        tx.import_local_tx.clone(),
-    )) {
-        error!(space_id = %inner.id(), "failed adding stream to key bundle task: {err}");
-    }
-
     (
         Space {
             inner,
             store,
             repair_task,
-            key_bundle_task_tx,
+            egress_handle,
             tx,
-            connection_authoriser,
         },
         SpaceSubscription { rx },
     )
@@ -78,20 +64,8 @@ where
     inner: InnerSpace,
     store: SqliteStore,
     repair_task: RepairTask,
-    key_bundle_task_tx: KeyBundleTaskSender,
+    egress_handle: EgressHandle,
     tx: StreamPublisher<M>,
-    connection_authoriser: ConnectionAuthoriser,
-}
-
-impl<M> Drop for Space<M>
-where
-    M: Serialize,
-{
-    fn drop(&mut self) {
-        let _ = self
-            .key_bundle_task_tx
-            .send(KeyBundleTaskCommand::RemoveStream(self.id()));
-    }
 }
 
 impl<M> Space<M>
@@ -124,17 +98,13 @@ where
         //
         // We could also handle this outside of p2panda-spaces, simply by coming up with an argument
         // in the extensions for the spaces processor in p2panda-stream.
-        let (_, message, _event) = self.inner.publish(&body_bytes).await?;
+        let (_, message, _) = self.inner.publish(&body_bytes).await?;
 
-        // @TODO: We don't need to persist the spaces state here as it's possible for the spaces
-        // processor to handle our own operations. Not doing this has the benefit of allowing
-        // application events to be emitted from the spaces processor, rather than having to
-        // construct and send them here manually.
+        // We don't need to persist state or pass enriched events through the pipeline as the spaces
+        // processor can re-process this event.
         let processed = self
-            .tx
-            .import_local(futures_util::stream::once(async {
-                message.into_operation()
-            }))
+            .egress_handle
+            .dispatch(message.into_operation(), self.id().into())
             .await?;
 
         Ok(SpaceFuture {
@@ -162,7 +132,7 @@ where
         // ensure we have incorporated the latest groups changes into the space.
         self.repair().await?;
 
-        let (groups_y, space_y, auth_message, space_message, events) = self
+        let output = self
             .inner
             .add(
                 actor,
@@ -173,11 +143,7 @@ where
             )
             .await?;
 
-        // TODO: Only required until https://github.com/p2panda/p2panda/issues/1362 is resolved.
-        update_authoriser(&self.connection_authoriser, &events).await;
-
-        self.process_change(groups_y, space_y, [auth_message, space_message], events)
-            .await?;
+        self.process_change(output).await?;
 
         Ok(())
     }
@@ -199,14 +165,8 @@ where
         // ensure we have incorporated the latest groups changes into the space.
         self.repair().await?;
 
-        let (groups_y, space_y, auth_message, space_message, events) =
-            self.inner.remove(actor).await?;
-
-        // TODO: Only required until https://github.com/p2panda/p2panda/issues/1362 is resolved.
-        update_authoriser(&self.connection_authoriser, &events).await;
-
-        self.process_change(groups_y, space_y, [auth_message, space_message], events)
-            .await?;
+        let output = self.inner.remove(actor).await?;
+        self.process_change(output).await?;
 
         Ok(())
     }
@@ -234,7 +194,7 @@ where
         // ensure we have incorporated the latest groups changes into the space.
         self.repair().await?;
 
-        let (groups_y, space_y, auth_message, space_message, events) = self
+        let output = self
             .inner
             .promote(
                 actor,
@@ -245,8 +205,7 @@ where
             )
             .await?;
 
-        self.process_change(groups_y, space_y, [auth_message, space_message], events)
-            .await?;
+        self.process_change(output).await?;
 
         Ok(())
     }
@@ -274,7 +233,7 @@ where
         // ensure we have incorporated the latest groups changes into the space.
         self.repair().await?;
 
-        let (groups_y, space_y, auth_message, space_message, events) = self
+        let output = self
             .inner
             .demote(
                 actor,
@@ -285,64 +244,36 @@ where
             )
             .await?;
 
-        self.process_change(groups_y, space_y, [auth_message, space_message], events)
-            .await?;
+        self.process_change(output).await?;
 
         Ok(())
     }
 
     async fn process_change(
         &self,
-        groups_y: AuthGroupState<AuthCapabilities>,
-        space_y: SpacesState<AuthCapabilities>,
-        messages: [SpacesMessage; 2],
-        events: Vec<p2panda_spaces::Event<AuthCapabilities>>,
+        space_output: SpaceOutput<AuthCapabilities, SpacesMessage>,
     ) -> Result<(), ProcessError> {
         // Associate member logs with this space. This is equivalent to the member association hook
         // which is registered on the event processing pipeline. Since locally issued events are not
         // going through the pipeline, we have to repeat it here as well.
-        associate_members(self.inner.me(), &self.store, &events).await;
+        associate_members(self.inner.me(), &self.store, space_output.events()).await;
 
         let spaces_store = SqliteSpacesStore::<Extensions>::new(self.store.clone());
 
         tx!(spaces_store, {
             // Persist the computed groups and spaces state to the stores.
             spaces_store
-                .set_groups_state_tx(Hash::digest(GLOBAL_GROUPS_CONTEXT_ID), &groups_y)
+                .set_groups_state_tx(
+                    Hash::digest(GLOBAL_GROUPS_CONTEXT_ID),
+                    &space_output.groups_y,
+                )
                 .await?;
             spaces_store
-                .set_space_state_tx(&self.id(), &SpacesStoreState::from(space_y))
+                .set_space_state_tx(&self.id(), &SpacesStoreState::from(space_output.space_y))
                 .await?;
         });
 
-        let processed = self
-            .tx
-            .import_local(futures_util::stream::iter(
-                messages.into_iter().map(|message| message.into_operation()),
-            ))
-            .await?;
-
-        processed.await?;
-
-        // Manually forward the resulting spaces events to the application layer.
-        let events = events
-            .into_iter()
-            .filter_map(|event| match event {
-                p2panda_spaces::Event::Spaces(space_event) => {
-                    Some(to_stream_event(space_event).into())
-                }
-                p2panda_spaces::Event::Groups(group_event) => {
-                    Some(to_system_event(group_event).into())
-                }
-                _ => None,
-            })
-            .collect();
-
-        self.tx
-            .to_output_tx
-            .send(events)
-            .await
-            .map_err(|_| ProcessError::AppSend)?;
+        dispatch_spaces_events(&self.egress_handle, self.id(), space_output.messages).await?;
 
         Ok(())
     }
@@ -383,8 +314,31 @@ where
     }
 }
 
+pub(crate) async fn dispatch_spaces_events(
+    egress_handle: &EgressHandle,
+    space_id: SpaceId,
+    events: Vec<(SpacesMessage, Vec<SpacesEvent>)>,
+) -> Result<(), SpaceEgressError> {
+    let topic = space_id.into();
+
+    for (message, events) in events {
+        let processed = if events.is_empty() {
+            egress_handle
+                .dispatch(message.into_operation(), topic)
+                .await?
+        } else {
+            egress_handle
+                .dispatch_with_spaces_events(message.into_operation(), topic, Some(events))
+                .await?
+        };
+
+        processed.await?;
+    }
+
+    Ok(())
+}
+
 pub struct SpaceSubscription<M> {
-    #[allow(unused)]
     rx: StreamSubscription<M>,
 }
 
@@ -400,8 +354,8 @@ where
 }
 
 pub struct SpaceFuture {
-    pub(crate) space_id: SpaceId,
-    pub(crate) processed: LocalStreamFuture,
+    pub space_id: SpaceId,
+    pub processed: SubmitFuture,
 }
 
 impl SpaceFuture {
@@ -411,12 +365,21 @@ impl SpaceFuture {
 }
 
 impl Future for SpaceFuture {
-    // TODO: Processor result?
-    type Output = Result<(), oneshot::error::RecvError>;
+    type Output = Result<(), EgressError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.processed.poll_unpin(cx)
     }
+}
+
+#[derive(Debug, Error)]
+#[allow(clippy::large_enum_variant)] // TODO: Reduce size of spaces error types.
+pub enum SpaceEgressError {
+    #[error(transparent)]
+    Submit(#[from] SubmitError),
+
+    #[error(transparent)]
+    Egress(#[from] EgressError),
 }
 
 #[derive(Debug, Error)]
@@ -523,7 +486,7 @@ pub enum ProcessError {
     Manager(#[from] SpacesManagerError),
 
     #[error(transparent)]
-    Import(#[from] ImportError),
+    SpaceEgress(#[from] SpaceEgressError),
 
     #[error(transparent)]
     Store(#[from] SqliteError),
@@ -550,7 +513,7 @@ pub enum PublishSpaceError {
     Encode(#[from] EncodeError),
 
     #[error(transparent)]
-    Import(#[from] ImportError),
+    Submit(#[from] SubmitError),
 
     #[error(transparent)]
     Store(#[from] SqliteError),
