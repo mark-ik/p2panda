@@ -763,3 +763,84 @@ async fn large_message_error() {
         )))
     );
 }
+
+#[tokio::test]
+async fn member_whose_address_arrives_after_subscribe_is_joined() {
+    setup_logging();
+
+    // Scenario: bat knows ant only by id, tags it onto the topic and subscribes. Ant's signed
+    // address arrives afterwards, the way mDNS delivers it.
+    //
+    // Assert: bat joins ant once ant's record exists.
+
+    let ant_args = test_args();
+    let bat_args = test_args();
+    let topic: Topic = [7; 32].into();
+
+    let ant_address_book = AddressBook::builder().spawn().await.unwrap();
+    let bat_address_book = AddressBook::builder().spawn().await.unwrap();
+
+    let ant_endpoint = Endpoint::builder(ant_address_book.clone())
+        .config(ant_args.iroh_config.clone())
+        .signing_key(ant_args.signing_key.clone())
+        .spawn()
+        .await
+        .unwrap();
+    let bat_endpoint = Endpoint::builder(bat_address_book.clone())
+        .config(bat_args.iroh_config.clone())
+        .signing_key(bat_args.signing_key.clone())
+        .spawn()
+        .await
+        .unwrap();
+
+    // Tagged by id alone: no record, so no address yet.
+    bat_address_book
+        .set_topics(ant_args.verifying_key, [topic])
+        .await
+        .unwrap();
+
+    let ant_gossip = Gossip::builder(ant_address_book.clone(), ant_endpoint.clone())
+        .spawn()
+        .await
+        .unwrap();
+    let bat_gossip = Gossip::builder(bat_address_book.clone(), bat_endpoint.clone())
+        .spawn()
+        .await
+        .unwrap();
+
+    let mut events = bat_gossip.events().await.unwrap();
+    let _ant_to_gossip = ant_gossip.stream(topic).await.unwrap();
+    let _bat_to_gossip = bat_gossip.stream(topic).await.unwrap();
+
+    // Ant's signed address arrives late.
+    let transport_info = {
+        let mut unsigned = crate::addrs::UnsignedTransportInfo::new();
+        unsigned.add_addr(crate::addrs::TransportAddress::from_iroh(
+            ant_args.verifying_key,
+            None,
+            [(ant_args.iroh_config.bind_ip_v4, ant_args.iroh_config.bind_port_v4).into()],
+        ));
+        unsigned.sign(&ant_args.signing_key).unwrap()
+    };
+    bat_address_book
+        .insert_transport_info(ant_args.verifying_key, transport_info.into())
+        .await
+        .unwrap();
+
+    let joined = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match events.recv().await.unwrap() {
+                GossipEvent::Joined { nodes, .. } if nodes.contains(&ant_args.verifying_key) => {
+                    break;
+                }
+                GossipEvent::NeighbourUp { node, .. } if node == ant_args.verifying_key => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        joined.is_ok(),
+        "bat never joined ant after ant's address arrived"
+    );
+}

@@ -150,6 +150,24 @@ impl AddressBookState {
 
         Ok(())
     }
+
+    /// Re-evaluate the interested nodes of every topic this node holds.
+    ///
+    /// A topic's interested nodes are the nodes with both a record and the topic, so a node
+    /// tagged before its record existed joins that set when the record is written. Watchers only
+    /// notify on a real change.
+    async fn refresh_topics_of(&self, node_id: &NodeId) -> Result<(), StoreError> {
+        for topic in self.topics_for_node(node_id).await? {
+            let node_ids = self
+                .node_infos_by_topics(vec![topic])
+                .await?
+                .into_iter()
+                .map(|info| info.id());
+            self.topic_watchers
+                .update(&topic, HashSet::from_iter(node_ids));
+        }
+        Ok(())
+    }
 }
 
 pub type AddressBookActorArgs = (AddressBookStoreHandle,);
@@ -202,6 +220,7 @@ impl ThreadLocalActor for AddressBookActor {
                 state
                     .node_watchers
                     .update(&node_info.node_id, Some(node_info.clone()));
+                state.refresh_topics_of(&node_info.node_id).await?;
 
                 let _ = reply.send(Ok(result));
             }
@@ -240,6 +259,7 @@ impl ThreadLocalActor for AddressBookActor {
                 state
                     .node_watchers
                     .update(&node_info.node_id, Some(node_info.clone()));
+                state.refresh_topics_of(&node_info.node_id).await?;
             }
             ToAddressBookActor::WatchNodeInfo(node_id, updates_only, reply) => {
                 let node_info = state.store.node_info(&node_id).await?;
