@@ -818,7 +818,11 @@ async fn member_whose_address_arrives_after_subscribe_is_joined() {
         unsigned.add_addr(crate::addrs::TransportAddress::from_iroh(
             ant_args.verifying_key,
             None,
-            [(ant_args.iroh_config.bind_ip_v4, ant_args.iroh_config.bind_port_v4).into()],
+            [(
+                ant_args.iroh_config.bind_ip_v4,
+                ant_args.iroh_config.bind_port_v4,
+            )
+                .into()],
         ));
         unsigned.sign(&ant_args.signing_key).unwrap()
     };
