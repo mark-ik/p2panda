@@ -23,7 +23,7 @@ use p2panda_sync::traits::Protocol;
 use tokio_stream::StreamExt;
 
 use crate::LogSync;
-use crate::test_utils::{TestNode, test_args};
+use crate::test_utils::{TestNode, loopback_addr, test_args};
 
 #[derive(Clone, Debug, Default)]
 struct ReleaseTrackedStore {
@@ -206,6 +206,28 @@ async fn idle_shutdown_returns_promptly() {
     );
 }
 
+// Automatic discovery and explicit initiation can open concurrent sessions.
+// Their topic-wide events may interleave; assert order within the selected
+// session and still fail on lag, closure, or a missing expected event.
+async fn session_event(
+    subscription: &mut crate::sync::SyncSubscription<Event<()>>,
+    session_id: u64,
+) -> Result<FromSync<Event<()>>, tokio_stream::wrappers::errors::BroadcastStreamRecvError> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = subscription
+                .next()
+                .await
+                .expect("sync subscription closed")?;
+            if event.session_id == session_id {
+                return Ok(event);
+            }
+        }
+    })
+    .await
+    .expect("selected sync session did not produce its next event")
+}
+
 #[tokio::test]
 async fn e2e_log_sync() {
     setup_logging();
@@ -240,7 +262,7 @@ async fn e2e_log_sync() {
 
     // Assert Alice receives the expected events.
     let bob_id = bob.node_id();
-    let event = alice_subscription.next().await.unwrap();
+    let event = session_event(&mut alice_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -249,7 +271,7 @@ async fn e2e_log_sync() {
             event: Event::SyncStarted { .. },
         }) if remote == bob_id
     );
-    let event = alice_subscription.next().await.unwrap();
+    let event = session_event(&mut alice_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -257,7 +279,7 @@ async fn e2e_log_sync() {
             ..
         })
     );
-    let event = alice_subscription.next().await.unwrap();
+    let event = session_event(&mut alice_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -265,7 +287,7 @@ async fn e2e_log_sync() {
             ..
         })
     );
-    let event = alice_subscription.next().await.unwrap();
+    let event = session_event(&mut alice_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -276,7 +298,7 @@ async fn e2e_log_sync() {
 
     // Assert Bob receives the expected events.
     let alice_id = alice.node_id();
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -285,7 +307,7 @@ async fn e2e_log_sync() {
             event: Event::SyncStarted { .. },
         }) if remote == alice_id
     );
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -293,7 +315,7 @@ async fn e2e_log_sync() {
             ..
         })
     );
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -301,7 +323,7 @@ async fn e2e_log_sync() {
             ..
         })
     );
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -310,11 +332,12 @@ async fn e2e_log_sync() {
         })
     );
 
-    // Alice publishes a live message.
+    // Alice publishes a live message; require its exact signed operation id.
     let (header, _, body) = alice
         .client
         .create_operation(b"live message from Alice", log_id)
         .await;
+    let live_hash = header.hash();
     alice_handle
         .publish(Operation {
             hash: header.hash(),
@@ -324,20 +347,20 @@ async fn e2e_log_sync() {
         .unwrap();
 
     // Bob receives Alice's live message.
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
-            event: Event::OperationReceived { .. },
+            event: Event::OperationReceived { operation, .. },
             ..
-        })
+        }) if operation.hash == live_hash
     );
 
     // Drop Alice's stream to enforce closing live session with Bob.
     drop(alice_handle);
 
     // Both peers observe a clean session close.
-    let event = bob_subscription.next().await.unwrap();
+    let event = session_event(&mut bob_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -345,7 +368,7 @@ async fn e2e_log_sync() {
             ..
         })
     );
-    let event = alice_subscription.next().await.unwrap();
+    let event = session_event(&mut alice_subscription, 0).await;
     std::assert_matches!(
         event,
         Ok(FromSync {
@@ -390,13 +413,14 @@ async fn late_manager_syncs_over_an_active_gossip_overlay() {
     // proof that both peers are already neighbours before either late manager.
     let established = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         for _ in 0..4 {
-            alice_events.next().await.unwrap().unwrap();
-            bob_events.next().await.unwrap().unwrap();
+            session_event(&mut alice_events, 0).await.unwrap();
+            session_event(&mut bob_events, 0).await.unwrap();
         }
         let (header, _, body) = alice
             .client
             .create_operation(b"existing-overlay live operation", log_id)
             .await;
+        let live_hash = header.hash();
         alice_handle
             .publish(Operation {
                 hash: header.hash(),
@@ -405,11 +429,11 @@ async fn late_manager_syncs_over_an_active_gossip_overlay() {
             })
             .unwrap();
         std::assert_matches!(
-            bob_events.next().await.unwrap(),
+            session_event(&mut bob_events, 0).await,
             Ok(FromSync {
-                event: Event::OperationReceived { .. },
+                event: Event::OperationReceived { operation, .. },
                 ..
-            })
+            }) if operation.hash == live_hash
         );
     })
     .await;
@@ -746,7 +770,7 @@ async fn panic_on_sink_closure_after_error_regression() {
     let acceptor_router = Router::builder(acceptor)
         .accept(ALPN, TestProtocol::default())
         .spawn();
-    let addr = acceptor_router.endpoint().addr();
+    let addr = loopback_addr(acceptor_router.endpoint());
 
     let initiator = Endpoint::bind(presets::Minimal).await.unwrap();
     let connection = initiator.connect(addr, ALPN).await.unwrap();
@@ -766,4 +790,6 @@ async fn panic_on_sink_closure_after_error_regression() {
     connection.close(0u32.into(), b"testing");
     let result = handle.await.unwrap();
     assert!(result.is_err());
+    acceptor_router.shutdown().await.unwrap();
+    initiator.close().await;
 }

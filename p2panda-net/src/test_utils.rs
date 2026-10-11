@@ -22,6 +22,17 @@ use crate::{AddressBook, Discovery, Endpoint, Gossip, LogSync, MdnsDiscovery, Ne
 
 pub const TEST_NETWORK_ID: NetworkId = [1; 32];
 
+/// Address a local test endpoint through its actual IPv4 loopback socket.
+/// Fixtures need no relay discovery or access through the machine's LAN NIC.
+pub fn loopback_addr(endpoint: &iroh::Endpoint) -> iroh::EndpointAddr {
+    let socket = endpoint
+        .bound_sockets()
+        .into_iter()
+        .find(|addr| addr.is_ipv4())
+        .expect("test endpoint has a bound IPv4 socket");
+    iroh::EndpointAddr::new(endpoint.id()).with_ip_addr((Ipv4Addr::LOCALHOST, socket.port()).into())
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationArguments {
     pub network_id: NetworkId,

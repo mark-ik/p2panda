@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::address_book::AddressBook;
 use crate::iroh_endpoint::{Builder, Endpoint};
-use crate::test_utils::test_args;
+use crate::test_utils::{loopback_addr, test_args};
 use crate::utils::to_verifying_key;
 
 const ECHO_PROTOCOL_ID: &[u8] = b"test/echo/v1";
@@ -241,7 +241,7 @@ async fn raw_protocol_keeps_its_exact_external_alpn() {
     let alice_raw = alice.endpoint().await.unwrap();
     let bob_raw = bob.endpoint().await.unwrap();
     let connection = bob_raw
-        .connect(alice_raw.addr(), ECHO_PROTOCOL_ID)
+        .connect(loopback_addr(&alice_raw), ECHO_PROTOCOL_ID)
         .await
         .expect("an external client negotiates the literal ALPN");
     let (mut tx, mut rx) = connection.open_bi().await.unwrap();
@@ -249,4 +249,6 @@ async fn raw_protocol_keeps_its_exact_external_alpn() {
     tx.finish().unwrap();
     assert_eq!(rx.read_to_end(64).await.unwrap(), b"literal");
     connection.close(0u32.into(), b"done");
+    alice_raw.close().await;
+    bob_raw.close().await;
 }
