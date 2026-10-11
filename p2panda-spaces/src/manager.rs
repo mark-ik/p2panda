@@ -31,7 +31,7 @@ use crate::space::RepairOutput;
 use crate::space::{Space, SpaceError, SpaceOutput, SpacesState};
 use crate::store::SpacesStoreState;
 use crate::types::AuthGroupState;
-use crate::{ActorId, Config, Credentials, GroupId, SpaceId};
+use crate::{ActorId, Config, Credentials, GroupId, OperationId, SpaceId};
 
 /// Identifier used to store groups state into database.
 pub const GLOBAL_GROUPS_CONTEXT_ID: &[u8] = b"global-groups-context";
@@ -78,7 +78,7 @@ impl<S, F, C> Manager<S, F, C>
 where
     S: Clone
         + SpacesStore<SpacesStoreState<C>>
-        + SpacesMessageStore<SpacesArgs<C>>
+        + SpacesMessageStore<F::Message>
         + GroupsStore<AuthMessage<C>, C>
         + KeyRegistryStore
         + KeySecretsStore
@@ -248,27 +248,24 @@ where
                 output.events = vec![event];
             }
             SpacesArgs::Group { .. } => {
-                let event = Group::process(self.clone(), &SpacesMessage::auth(message))
+                let (groups_y, event) = Group::process(self.clone(), &SpacesMessage::auth(message))
                     .await
                     .map_err(ManagerError::Group)?;
 
-                if let Some((groups_y, event)) = event {
-                    output.groups_y = Some(groups_y);
-                    output.events = vec![event];
-                }
+                output.groups_y = groups_y;
+                output.events = vec![event];
             }
             // Received control message related to a space.
             SpacesArgs::SpaceMembership { space_id, .. } => {
-                if let Some((space_y, events)) = self
+                let (space_y, events) = self
                     .handle_space_membership_message(
                         *space_id,
                         &SpacesMessage::space_membership(message),
                     )
-                    .await?
-                {
-                    output.space_y = Some(space_y);
-                    output.events = events;
-                }
+                    .await?;
+
+                output.space_y = space_y;
+                output.events = events;
             }
             SpacesArgs::SpaceUpdate { .. } => unimplemented!(),
             // Received encrypted application data for a space.
@@ -339,6 +336,19 @@ where
             .key_bundle_message()
             .await
             .map_err(ManagerError::IdentityManager)
+    }
+
+    /// Get a space message from the store.
+    pub(crate) async fn get_space_message(
+        &self,
+        id: OperationId,
+    ) -> Result<Option<F::Message>, StoreError> {
+        let manager = self.inner.read().await;
+        manager
+            .store
+            .get_spaces_message(&id)
+            .await
+            .map_err(|err| StoreError::MessageStore(err.to_string()))
     }
 
     /// Get the global auth state.
@@ -482,7 +492,7 @@ where
         &self,
         space_id: SpaceId,
         message: &SpaceMembershipMessage,
-    ) -> Result<Option<(SpacesState<C>, Vec<Event<C>>)>, ManagerError<F, C>> {
+    ) -> Result<(Option<SpacesState<C>>, Vec<Event<C>>), ManagerError<F, C>> {
         // Get auth message.
         let auth_message = {
             let inner = self.inner.read().await;
@@ -517,9 +527,9 @@ where
                     return Err(ManagerError::UnexpectedMessage(message.id));
                 }
 
-                // @TODO: This is a bit strange. What are the API guarantees here over
-                // "inexistant" spaces. We should tell from the outside that a new one is
-                // initialised instead of pointing at an existing one.
+                // TODO: This is a bit strange. What are the API guarantees here over "inexistant"
+                // spaces. We should tell from the outside that a new one is initialised instead of
+                // pointing at an existing one.
                 Space::new(self.clone(), space_id)
             }
         };
@@ -554,7 +564,7 @@ impl<S, F, C> Manager<S, F, C>
 where
     S: Clone
         + SpacesStore<SpacesStoreState<C>>
-        + SpacesMessageStore<SpacesArgs<C>>
+        + SpacesMessageStore<F::Message>
         + GroupsStore<AuthMessage<C>, C>
         + KeyRegistryStore
         + KeySecretsStore

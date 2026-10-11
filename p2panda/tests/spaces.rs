@@ -1,14 +1,26 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use p2panda::{NetworkId, Node};
+use p2panda::{NetworkId, Node, Topic};
 use serde::{Deserialize, Serialize};
 
-async fn spawn_node(network_id: NetworkId) -> Node {
-    p2panda::builder()
-        .network_id(network_id)
-        .spawn()
-        .await
-        .unwrap()
+struct Swarm {
+    network_id: NetworkId,
+}
+
+impl Swarm {
+    pub fn new() -> Self {
+        Self {
+            network_id: Topic::random().into(),
+        }
+    }
+
+    pub async fn spawn_node(&self) -> Node {
+        p2panda::builder()
+            .network_id(self.network_id)
+            .spawn()
+            .await
+            .unwrap()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -22,21 +34,21 @@ mod spaces_api {
 
     use p2panda::Topic;
     use p2panda::spaces::InnerGroupEvent;
-    use p2panda::streams::{StreamEvent, SystemEvent};
-    use p2panda_auth::AccessLevel;
+    use p2panda::streams::{StreamEvent, StreamFrom, SystemEvent};
+    use p2panda_auth::{Access, AccessLevel};
     use p2panda_core::test_utils::setup_logging;
-    use p2panda_spaces::SpaceEvent;
+    use p2panda_spaces::{MemberId, SpaceEvent};
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
     #[tokio::test]
     async fn create_space_for_multiple_members() -> Result<(), Box<dyn std::error::Error>> {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
         let mut panda_system_rx = panda.event_stream().await?;
 
         // Spaces behave like topic-streams, just that they're encrypted towards members.
@@ -57,8 +69,8 @@ mod spaces_api {
         }
 
         // We can manage (nested) groups (useful for multi-device, etc.)
-        let penguin_laptop = spawn_node(network_id).await;
-        let penguin_mobile = spawn_node(network_id).await;
+        let penguin_laptop = swarm.spawn_node().await;
+        let penguin_mobile = swarm.spawn_node().await;
         let mut penguin_mobile_system_rx = penguin_mobile.event_stream().await?;
 
         // Penguin subscribes to the space in order to publish some key bundles.
@@ -79,7 +91,7 @@ mod spaces_api {
         }
 
         // Penguin creates a device group (on their laptop).
-        let penguin = penguin_laptop
+        let (penguin, _) = penguin_laptop
             .create_group(&[
                 (penguin_laptop.id(), AccessLevel::Write),
                 (penguin_mobile.id(), AccessLevel::Read),
@@ -117,32 +129,38 @@ mod spaces_api {
         panda_space.add(penguin.id(), AccessLevel::Read).await?;
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 3);
-                assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 3);
+                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
+                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
+                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
         while let Some(event) = penguin_laptop_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 3);
-                assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 3);
+                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
+                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
+                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
         while let Some(event) = penguin_mobile_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 3);
-                assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 3);
+                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
+                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
+                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
@@ -289,11 +307,11 @@ mod spaces_api {
     async fn spaces_sync() -> Result<(), Box<dyn std::error::Error>> {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
-        let penguin = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
+        let penguin = swarm.spawn_node().await;
 
         // Penguin subscribes to the space (and publishes a key bundle).
         let (_penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await?;
@@ -323,18 +341,22 @@ mod spaces_api {
         panda_space.add(penguin.id(), AccessLevel::Read).await?;
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
         while let Some(event) = penguin_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
@@ -373,6 +395,130 @@ mod spaces_api {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn replay_causally_ordered() {
+        setup_logging();
+
+        let swarm = Swarm::new();
+
+        let panda = swarm.spawn_node().await;
+        let penguin = swarm.spawn_node().await;
+
+        {
+            let penguin_member_info = penguin.me().await.unwrap();
+            panda
+                .spaces_manager()
+                .register_member(&penguin_member_info.into())
+                .await
+                .unwrap();
+        }
+
+        // Creating a space effectively creates two operations:
+        //
+        // 1. Group CREATE message
+        // 2. Space CREATE membership ("key-agreement") message (depends on 1.)
+        //
+        // Causal order: The second operation points at the first to declare it as a dependency.
+        let topic = Topic::random();
+        let out = panda
+            .spaces_manager()
+            .create_space(
+                topic,
+                &[
+                    (panda.id(), Access::write()),
+                    (penguin.id(), Access::write()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let mut operations = out
+            .messages
+            .into_iter()
+            .map(|(msg, _)| msg.into_operation());
+        let op_1 = operations.next().unwrap();
+        let op_2 = operations.next().unwrap();
+
+        // Penguin processes the operations in the "wrong" order (op2 first, then op1).
+        let (penguin_space, mut penguin_rx) = penguin.space::<String>(topic).await.unwrap();
+        let processed = penguin_space
+            .inner_tx()
+            .import(futures_util::stream::iter([op_2, op_1]))
+            .await
+            .unwrap();
+        processed.await.unwrap();
+
+        // We expect Penguin to be fine with processing out-of-order operations and normally joining
+        // the space.
+        while let Some(stream_event) = penguin_rx.next().await {
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Created { space_id, .. },
+                ..
+            } = stream_event
+            {
+                if space_id == topic.into() {
+                    break;
+                }
+            }
+        }
+
+        let members: Vec<MemberId> = penguin_space
+            .members()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(members.contains(&panda.id()));
+        assert!(members.contains(&penguin.id()));
+        assert_eq!(members.len(), 2);
+
+        // Penguin encrypts an application message with the space.
+        //
+        // Causal order: The resulting operation op3 should point at op2 as a dependency.
+        let processed = penguin_space.publish("Chaos!".to_string()).await.unwrap();
+        processed.await.unwrap();
+
+        // Processing and receiving the event on application layer will automatically ack it.
+        while let Some(stream_event) = penguin_rx.next().await {
+            if let StreamEvent::Processed { operation, .. } = stream_event {
+                if operation.message() == &"Chaos!".to_string() {
+                    break;
+                }
+            }
+        }
+
+        // Create the space stream again and re-play from start.
+        drop(penguin_space);
+        drop(penguin_rx);
+
+        let (_penguin_space, mut penguin_rx) = penguin
+            .space_from::<String>(topic, StreamFrom::Start)
+            .await
+            .unwrap();
+
+        // We expect the re-played events to arrive in the same, causal order again.
+        while let Some(stream_event) = penguin_rx.next().await {
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Created { space_id, .. },
+                ..
+            } = stream_event
+            {
+                if space_id == topic.into() {
+                    break;
+                }
+            }
+        }
+
+        while let Some(stream_event) = penguin_rx.next().await {
+            if let StreamEvent::Processed { operation, .. } = stream_event {
+                if operation.message() == &"Chaos!".to_string() {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 mod spaces_repair_task {
@@ -384,22 +530,22 @@ mod spaces_repair_task {
     use p2panda_spaces::SpaceEvent;
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
     #[tokio::test]
     async fn sync_repair_space() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
         let mut panda_system_rx = panda.event_stream().await.unwrap();
-        let penguin = spawn_node(network_id).await;
+        let penguin = swarm.spawn_node().await;
         let mut penguin_system_rx = penguin.event_stream().await.unwrap();
 
         // Penguin creates a group before subscribing to the space.
-        let penguin_group = penguin
+        let (penguin_group, _) = penguin
             .create_group(&[(penguin.id(), AccessLevel::Manage)])
             .await
             .unwrap();
@@ -452,18 +598,22 @@ mod spaces_repair_task {
             .unwrap();
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
         while let Some(event) = penguin_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
     }
@@ -472,12 +622,12 @@ mod spaces_repair_task {
     async fn live_repair_space() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
         let mut panda_system_rx = panda.event_stream().await.unwrap();
-        let penguin = spawn_node(network_id).await;
+        let penguin = swarm.spawn_node().await;
 
         // Penguin subscribes to the space.
         let (_penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
@@ -494,7 +644,7 @@ mod spaces_repair_task {
         }
 
         // And then creates a group.
-        let penguin_group = penguin
+        let (penguin_group, _) = penguin
             .create_group(&[(penguin.id(), AccessLevel::Manage)])
             .await
             .unwrap();
@@ -520,18 +670,22 @@ mod spaces_repair_task {
             .unwrap();
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
 
         while let Some(event) = penguin_rx.next().await {
-            if let StreamEvent::Space { members, .. } = event {
-                assert_eq!(members.len(), 2);
-                assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
-                break;
+            if let StreamEvent::Space { members, inner, .. } = event {
+                if let SpaceEvent::Added { .. } = inner {
+                    assert_eq!(members.len(), 2);
+                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+                    break;
+                }
             };
         }
     }
@@ -552,16 +706,16 @@ mod spaces_api_validation {
     use p2panda_spaces::SpaceEvent;
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
     #[tokio::test]
     async fn api_validation() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
 
         let (panda_space, mut panda_rx) = panda.create_space::<String>(topic).await.unwrap();
 
@@ -588,7 +742,7 @@ mod spaces_api_validation {
         );
 
         // Tiger subscribes to the space.
-        let tiger = spawn_node(network_id).await;
+        let tiger = swarm.spawn_node().await;
         let (tiger_space, mut tiger_rx) = tiger.space::<String>(topic).await.unwrap();
 
         while let Some(event) = panda_rx.next().await {
@@ -644,11 +798,11 @@ mod spaces_api_validation {
     async fn groups_api_validation() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
 
-        let panda = spawn_node(network_id).await;
-        let lion = spawn_node(network_id).await;
-        let tiger = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
+        let lion = swarm.spawn_node().await;
+        let tiger = swarm.spawn_node().await;
 
         let topic = Topic::random();
 
@@ -660,7 +814,7 @@ mod spaces_api_validation {
         let mut lion_system_rx = lion.event_stream().await.unwrap();
         let mut tiger_system_rx = tiger.event_stream().await.unwrap();
 
-        let panda_group = panda
+        let (panda_group, _) = panda
             .create_group(&[
                 (panda.id(), AccessLevel::Manage),
                 (lion.id(), AccessLevel::Read),
@@ -719,7 +873,7 @@ mod spaces_api_validation {
         }
 
         // Tiger isn't a recognized group actor.
-        let panda_group_on_tiger = tiger.group(panda_group.id()).await.unwrap().unwrap();
+        let (panda_group_on_tiger, _) = tiger.group(panda_group.id()).await.unwrap();
         let result = panda_group_on_tiger
             .add(tiger.id(), AccessLevel::Write)
             .await;
@@ -732,7 +886,7 @@ mod spaces_api_validation {
         );
 
         // Lion doesn't have required access level.
-        let panda_group_on_lion = lion.group(panda_group.id()).await.unwrap().unwrap();
+        let (panda_group_on_lion, _) = lion.group(panda_group.id()).await.unwrap();
         let result = panda_group_on_lion.remove(panda.id()).await;
         assert_matches!(
             result.err().unwrap(),
@@ -744,195 +898,72 @@ mod spaces_api_validation {
     }
 }
 
-mod spaces_events {
+mod system_events {
     use p2panda::Topic;
-    use p2panda::spaces::{GroupEvent, InnerGroupEvent};
+    use p2panda::spaces::InnerGroupEvent;
     use p2panda::streams::SystemEvent;
     use p2panda_auth::AccessLevel;
     use p2panda_core::test_utils::setup_logging;
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
-    #[ignore = "group streams are not stable yet"]
     #[tokio::test]
-    async fn group_events() {
+    async fn group_system_events_via_spaces() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
+        let penguin = swarm.spawn_node().await;
+
         let mut panda_system_rx = panda.event_stream().await.unwrap();
+        let mut penguin_system_rx = penguin.event_stream().await.unwrap();
 
         let topic = Topic::random();
+        let (space, _) = panda.create_space::<SecretData>(topic).await.unwrap();
+        let (_space_on_penguin, _) = penguin.space::<SecretData>(topic).await.unwrap();
 
-        // Create a space with only us inside. Having a space in this test is only required to sync
-        // the group operations.
-        let (_panda_space, _panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
-
-        let penguin_laptop = spawn_node(network_id).await;
-        let penguin_mobile = spawn_node(network_id).await;
-        let mut penguin_laptop_system_rx = penguin_laptop.event_stream().await.unwrap();
-
-        let (_penguin_laptop_space, _penguin_laptop_rx) =
-            penguin_laptop.space::<SecretData>(topic).await.unwrap();
-        let (_penguin_mobile_space, _penguin_mobile_rx) =
-            penguin_mobile.space::<SecretData>(topic).await.unwrap();
-
-        // Penguin creates a device group.
-        let device_group = penguin_laptop
-            .create_group(&[(penguin_laptop.id(), AccessLevel::Manage)])
+        // Panda creates a device group.
+        let (device_group, _) = panda
+            .create_group(&[(panda.id(), AccessLevel::Manage)])
             .await
             .unwrap();
 
+        // And adds it to the space.
+        space
+            .add(device_group.id(), AccessLevel::Write)
+            .await
+            .unwrap();
+
+        // Panda receives the device group event on their system stream.
+        //
+        // Whichever stream a group operation arrives and is processed on the resulting change is
+        // emitted as an event on the system event stream. This "enriched" event is only emitted
+        // the first time it is processed.
+        loop {
+            if let Some(SystemEvent::Groups {
+                group_id,
+                inner: InnerGroupEvent::Created { .. },
+                ..
+            }) = panda_system_rx.next().await
+            {
+                if group_id == device_group.id() {
+                    break;
+                }
+            };
+        }
         // Penguin receives the device group event on their system stream.
         loop {
             if let Some(SystemEvent::Groups {
                 group_id,
                 inner: InnerGroupEvent::Created { .. },
                 ..
-            }) = penguin_laptop_system_rx.next().await
+            }) = penguin_system_rx.next().await
             {
                 if group_id == device_group.id() {
                     break;
                 }
-            };
-        }
-
-        // Panda receives the device group event on their system stream.
-        loop {
-            if let Some(SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            }) = panda_system_rx.next().await
-            {
-                if group_id == device_group.id() {
-                    break;
-                }
-            };
-        }
-
-        // Panda creates a team group with Penguin's device group as a member.
-        //
-        // TODO(adz): The test is ignored as the following line panics with:
-        //
-        // ```
-        // thread 'spaces_events::group_events' (86468) panicked at p2panda/src/node.rs:532:14:
-        // newly created group exists
-        // ```
-        //
-        // 1. Penguin creates a group A, op1 gets created and processed with the orderer, namespaced
-        //    for this group (state s1).
-        // 2. Panda creates a group B with A as a member, op2 gets created, it depends on op1 and is
-        //    processed with orderer (state s2).
-        // 3. op2 is never forwarded by orderer (state s2), it's stuck here. => panic!
-        //
-        // Both of them use a space stream to sync operations, but that space stream has a different
-        // id than group A and B, aka a different orderer state s3:
-        //
-        // Panda receives op1 from Penguin via sync, the spaces stream processed it, but applies the
-        // orderer state change to it's own orderer.
-        //
-        // I assume that for the spaces stream all is good and correct. Groups logs are correctly
-        // associated, processed and all in that stream. Maybe it's not a bug but just a sign that
-        // using group streams outside of spaces is not stable and requires more log association
-        // wrangling?
-        let team_group = panda
-            .create_group(&[
-                (panda.id(), AccessLevel::Manage),
-                (device_group.id(), AccessLevel::Write),
-            ])
-            .await
-            .unwrap();
-        let team_group_id = team_group.id();
-
-        // Penguin receives the team group event on their system stream.
-        loop {
-            let event = penguin_laptop_system_rx.next().await;
-
-            if let Some(SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            }) = event
-            {
-                if group_id == team_group.id() {
-                    break;
-                }
-            };
-        }
-
-        // Panda receives the team group event on their system stream.
-        loop {
-            if let Some(SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            }) = panda_system_rx.next().await
-            {
-                if group_id == team_group.id() {
-                    break;
-                }
-            };
-        }
-
-        // Panda subscribes to the group event stream.
-        let mut panda_team_group_rx = team_group.event_stream();
-        // Penguin subscribes to the group event stream.
-        let panda_team_group_on_penguin =
-            penguin_laptop.group(team_group_id).await.unwrap().unwrap();
-        let mut panda_team_group_on_penguin_rx = panda_team_group_on_penguin.event_stream();
-
-        // Penguin adds their mobile to the device group.
-        let ready = device_group
-            .add(penguin_mobile.id(), AccessLevel::Read)
-            .await
-            .unwrap();
-
-        ready.await.unwrap();
-
-        // Penguin receives the add event on the team group rx.
-        loop {
-            if let Some(GroupEvent {
-                members,
-                actors,
-                inner:
-                    InnerGroupEvent::Added {
-                        group_id: action_group_id,
-                        ..
-                    },
-                ..
-            }) = panda_team_group_on_penguin_rx.next().await
-            {
-                assert_eq!(members.len(), 3);
-                assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Write)));
-                assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
-                assert_eq!(actors.len(), 2);
-                assert_eq!(action_group_id, device_group.id());
-                break;
-            };
-        }
-
-        // Panda receives the add event on the team group rx.
-        loop {
-            if let Some(GroupEvent {
-                members,
-                actors,
-                inner:
-                    InnerGroupEvent::Added {
-                        group_id: action_group_id,
-                        ..
-                    },
-                ..
-            }) = panda_team_group_rx.next().await
-            {
-                assert_eq!(members.len(), 3);
-                assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Write)));
-                assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
-                assert_eq!(actors.len(), 2);
-                assert_eq!(action_group_id, device_group.id());
-                break;
             };
         }
     }
@@ -941,24 +972,23 @@ mod spaces_events {
 mod filtered_messages {
     use std::time::Duration;
 
+    use p2panda::Topic;
     use p2panda::streams::StreamEvent;
+    use p2panda_auth::AccessLevel;
     use p2panda_core::test_utils::setup_logging;
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
     #[tokio::test]
     async fn concurrently_removed_members_filtered() {
         setup_logging();
 
-        use p2panda::Topic;
-        use p2panda_auth::AccessLevel;
-
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
-        let penguin = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
+        let penguin = swarm.spawn_node().await;
 
         // Panda creates a space.
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
@@ -1075,15 +1105,12 @@ mod filtered_messages {
     async fn causally_later_removed_members_not_filtered() {
         setup_logging();
 
-        use p2panda::Topic;
-        use p2panda_auth::AccessLevel;
-
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
-        let penguin = spawn_node(network_id).await;
-        let tiger = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
+        let penguin = swarm.spawn_node().await;
+        let tiger = swarm.spawn_node().await;
 
         // Panda creates a space.
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
@@ -1179,7 +1206,7 @@ mod members {
     use p2panda_core::test_utils::setup_logging;
     use tokio_stream::StreamExt;
 
-    use crate::spawn_node;
+    use super::Swarm;
 
     // 1. Node A creates space S with {A, B, C, D} inside
     // 2. Node B removes C from S
@@ -1191,13 +1218,13 @@ mod members {
     async fn indirect_members_log_sync() {
         setup_logging();
 
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let node_a = spawn_node(network_id).await;
-        let node_b = spawn_node(network_id).await;
-        let node_c = spawn_node(network_id).await;
-        let node_d = spawn_node(network_id).await;
+        let node_a = swarm.spawn_node().await;
+        let node_b = swarm.spawn_node().await;
+        let node_c = swarm.spawn_node().await;
+        let node_d = swarm.spawn_node().await;
 
         let (node_a_space, mut node_a_rx) = node_a.create_space::<String>(topic).await.unwrap();
 
@@ -1281,26 +1308,25 @@ mod members {
 }
 
 mod sync_authorisation {
+    use p2panda::Topic;
     use p2panda::streams::{StreamEvent, SystemEvent};
+    use p2panda_auth::AccessLevel;
     use p2panda_core::test_utils::setup_logging;
     use p2panda_net::sync::authoriser::SyncBlockListEvent;
     use tokio_stream::StreamExt;
 
-    use super::{SecretData, spawn_node};
+    use super::{SecretData, Swarm};
 
     #[tokio::test]
     async fn member_allow_and_block() {
         setup_logging();
 
-        use p2panda::Topic;
-        use p2panda_auth::AccessLevel;
-
-        let network_id = Topic::random().into();
+        let swarm = Swarm::new();
         let topic = Topic::random();
 
-        let panda = spawn_node(network_id).await;
+        let panda = swarm.spawn_node().await;
         let mut panda_system_rx = panda.event_stream().await.unwrap();
-        let penguin = spawn_node(network_id).await;
+        let penguin = swarm.spawn_node().await;
 
         // Panda creates a space.
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();

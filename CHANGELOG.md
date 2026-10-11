@@ -37,6 +37,7 @@ Highlights are marked with a pancake 🥞
 - store: Add `resolve_topics` method to `TopicStore` trait [#1261](https://github.com/p2panda/p2panda/pull/1261)
 - store: Introduce `ProcessorStore` for storing event metadata from p2panda pipeline [#1262](https://github.com/p2panda/p2panda/pull/1262)
 - store: Add method on TopicStore to get all topics - [#1388](https://github.com/p2panda/p2panda/pull/1388)
+- store: `clear` & `clear_keys` methods for OrdererStore - [#1466](https://github.com/p2panda/p2panda/pull/1466)
 - stream: Filter out spaces application messages from concurrently removed members [#1291](https://github.com/p2panda/p2panda/pull/1291)
 - stream: Hooks processor to register event callbacks in streaming pipeline [#1339](https://github.com/p2panda/p2panda/pull/1339)
 - stream: Move orderer processor from node to stream [#1312](https://github.com/p2panda/p2panda/pull/1312)
@@ -50,6 +51,9 @@ Highlights are marked with a pancake 🥞
 - sync: Method to resolve log heights from topic [#1405](https://github.com/p2panda/p2panda/pull/1405)
 - sync: Re-export -stream ingest_operation in `api` module [#1406](https://github.com/p2panda/p2panda/pull/1406)
 - stream: Forward events of already processed operations in spaces processor [#1430](https://github.com/p2panda/p2panda/pull/1430)
+- auth: Add method for checking if actor id is a group [1483](https://github.com/p2panda/p2panda/pull/1483)
+- node: Add groups processor to pipeline [#1485](https://github.com/p2panda/p2panda/pull/1485)
+- node: Groups hook for associating group logs with topic [#1487](https://github.com/p2panda/p2panda/pull/1487)
 
 ### Changed
 
@@ -69,6 +73,11 @@ Highlights are marked with a pancake 🥞
 - net: Update iroh `v1.0.3` -> `v1.3.0` [#1465](https://github.com/p2panda/p2panda/pull/1465)
 - spaces: Return output structs from public APIs [#1453](https://github.com/p2panda/p2panda/pull/1453)
 - node: Remove redundant authoriser updates [#1455](https://github.com/p2panda/p2panda/pull/1455)
+- spaces: Make SpacesMessageStore::get_message return F::Message type [#1481](https://github.com/p2panda/p2panda/pull/1481)
+- spaces: Return all message deps from Space::repair and Space::create [#1483](https://github.com/p2panda/p2panda/pull/1483)
+- auth: Don't error when processing operation again [#1483](https://github.com/p2panda/p2panda/pull/1483)
+- stream: Namespace group state by stream id in group processor [#1485](https://github.com/p2panda/p2panda/pull/1485)
+- node: Introduce `GroupSubscription` and `StreamEvent::Group` [#1489](https://github.com/p2panda/p2panda/pull/1489)
 
 ### Fixed
 
@@ -76,8 +85,11 @@ Highlights are marked with a pancake 🥞
 - node: Allow event processing to handle out-of-order buffering by separating i/o streams and preserve input ordering [#1271](https://github.com/p2panda/)
 - node: Unblock task tracker by introducing "pass-through" events coming from orderer [#1267](https://github.com/p2panda/p2panda/pull/1267)
 - node: Manage separate orderer state per topic stream [#1461](https://github.com/p2panda/p2panda/pull/1461)
+- node: Orderer state needs to be reset before replay [#1467](https://github.com/p2panda/p2panda/pull/1467)
 - spaces: Deterministic deserialization of `SpacesArgs` [#1264](https://github.com/p2panda/p2panda/pull/1264)
 - spaces: Fix calculation of historically removed members [#1455](https://github.com/p2panda/p2panda/pull/1455)
+- spaces: Fix bug instantiating space from existing groups state [#1457](https://github.com/p2panda/p2panda/pull/1457)
+- store: Use `BEGIN IMMEDIATE` in database transaction to allow awaiting busy write locks across processes [#1502](https://github.com/p2panda/p2panda/pull/1502)
 
 ## [0.7.1] - 21/08/2026
 
