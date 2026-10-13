@@ -13,6 +13,7 @@ Highlights are marked with a pancake 🥞
 
 - net: `SyncHook` intercepting sync sessions to accept or reject them [#1451](https://github.com/p2panda/p2panda/pull/1451)
 - net: Introduce an `Authoriser` for maintaining and enforcing allow- and blocklists [#1321](https://github.com/p2panda/p2panda/pull/1321)
+- net: Use network id to separate mDNS discovery [#1511](https://github.com/p2panda/p2panda/pull/1511)
 - node: API for promoting and demoting space members [#1311](https://github.com/p2panda/p2panda/pull/1311)
 - node: Allow graceful closure of sync sessions [#1307](https://github.com/p2panda/p2panda/pull/1307)
 - node: Associate key bundle, groups and spaces logs with log topic [#1264](https://github.com/p2panda/p2panda/pull/1264)
@@ -90,6 +91,7 @@ Highlights are marked with a pancake 🥞
 - spaces: Fix calculation of historically removed members [#1455](https://github.com/p2panda/p2panda/pull/1455)
 - spaces: Fix bug instantiating space from existing groups state [#1457](https://github.com/p2panda/p2panda/pull/1457)
 - store: Use `BEGIN IMMEDIATE` in database transaction to allow awaiting busy write locks across processes [#1502](https://github.com/p2panda/p2panda/pull/1502)
+- net: Do not block sync actor awaiting `send_after` on retry [#1506](https://github.com/p2panda/p2panda/pull/1506)
 
 ## [0.7.1] - 21/08/2026
 
