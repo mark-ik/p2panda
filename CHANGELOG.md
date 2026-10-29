@@ -11,6 +11,7 @@ Highlights are marked with a pancake 🥞
 
 ### Added
 
+- node: Add custom_cursor_name optional param to Node::stream_from [1408](https://github.com/p2panda/p2panda/pull/1408)
 - net: `SyncHook` intercepting sync sessions to accept or reject them [#1451](https://github.com/p2panda/p2panda/pull/1451)
 - net: Introduce an `Authoriser` for maintaining and enforcing allow- and blocklists [#1321](https://github.com/p2panda/p2panda/pull/1321)
 - net: Use network id to separate mDNS discovery [#1511](https://github.com/p2panda/p2panda/pull/1511)
@@ -56,6 +57,9 @@ Highlights are marked with a pancake 🥞
 - node: Add groups processor to pipeline [#1485](https://github.com/p2panda/p2panda/pull/1485)
 - node: Groups hook for associating group logs with topic [#1487](https://github.com/p2panda/p2panda/pull/1487)
 - node: Debouncer w/ throttle for repair task [#1499](https://github.com/p2panda/p2panda/pull/1499)
+- node: Return `PendingSpace` to account for situations where it doesn't exist yet [#1529](https://github.com/p2panda/p2panda/pull/1529)
+- node: Await created, joined group events with `PendingGroup` [#1530](https://github.com/p2panda/p2panda/pull/1530)
+- node: Await registration of member key bundles with `PendingMember` [#1531](https://github.com/p2panda/p2panda/pull/1531)
 
 ### Changed
 
@@ -80,6 +84,9 @@ Highlights are marked with a pancake 🥞
 - auth: Don't error when processing operation again [#1483](https://github.com/p2panda/p2panda/pull/1483)
 - stream: Namespace group state by stream id in group processor [#1485](https://github.com/p2panda/p2panda/pull/1485)
 - node: Introduce `GroupSubscription` and `StreamEvent::Group` [#1489](https://github.com/p2panda/p2panda/pull/1489)
+- store: Namespace event metadata entries [#1521](https://github.com/p2panda/p2panda/pull/1521)
+- node: Repair task re-write with hook trigger [#1500](https://github.com/p2panda/p2panda/pull/1500)
+- node: Integrate new repair task into Node, Space and Group [#1498](https://github.com/p2panda/p2panda/pull/1498)
 
 ### Fixed
 
@@ -89,11 +96,18 @@ Highlights are marked with a pancake 🥞
 - node: Manage separate orderer state per topic stream [#1461](https://github.com/p2panda/p2panda/pull/1461)
 - node: Orderer state needs to be reset before replay [#1467](https://github.com/p2panda/p2panda/pull/1467)
 - node: Exit leaking pipeline thread on drop [#1524](https://github.com/p2panda/p2panda/pull/1524)
+- node: Fix deadlock caused by nested transactions when clearing orderer state during replay [#1516](https://github.com/p2panda/p2panda/pull/1516)
+- node: Fix lost cursor updates when acking across duplicate topic streams [#1545](https://github.com/p2panda/p2panda/pull/1545)
+- node: Fix acking space control messages [#1546](https://github.com/p2panda/p2panda/pull/1546)
 - spaces: Deterministic deserialization of `SpacesArgs` [#1264](https://github.com/p2panda/p2panda/pull/1264)
 - spaces: Fix calculation of historically removed members [#1455](https://github.com/p2panda/p2panda/pull/1455)
 - spaces: Fix bug instantiating space from existing groups state [#1457](https://github.com/p2panda/p2panda/pull/1457)
+- spaces: Atomic read -> modify -> write state handling for groups and spaces [#1513](https://github.com/p2panda/p2panda/pull/1513)
 - store: Use `BEGIN IMMEDIATE` in database transaction to allow awaiting busy write locks across processes [#1502](https://github.com/p2panda/p2panda/pull/1502)
 - net: Do not block sync actor awaiting `send_after` on retry [#1506](https://github.com/p2panda/p2panda/pull/1506)
+- store: Fix "write" methods not using transactions, consistent naming with _tx suffix [#1515](https://github.com/p2panda/p2panda/pull/1515)
+- node: Fix flaky spaces tests [#1539](https://github.com/p2panda/p2panda/pull/1539)
+- node: Trigger repair before any local group or space action [#1541](https://github.com/p2panda/p2panda/pull/1541)
 
 ## [0.7.1] - 21/08/2026
 

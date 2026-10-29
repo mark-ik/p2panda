@@ -11,11 +11,10 @@ use p2panda_encryption::data_scheme::GroupSecretId;
 use p2panda_encryption::traits::{GroupMessage as EncryptionOperation, GroupMessageContent};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::message::AuthMessage;
 use crate::encryption::dgm::EncryptionGroupMembership;
-use crate::message::{ApplicationMessage, SpaceMembershipMessage};
+use crate::message::{ApplicationMessage, AuthMessage, SpaceMembershipMessage};
 use crate::types::{AuthGroupAction, EncryptionControlMessage, EncryptionDirectMessage};
-use crate::utils::removed_secret_members;
+use crate::utils::removed_secret_members_diff;
 use crate::{MemberId, OperationId};
 
 /// Arguments which are returned from p2panda-encryption APIs.
@@ -145,7 +144,7 @@ impl EncryptionMessage {
             // member, otherwise use the VerifyingKey of the actual removed member (which may be
             // an individual or group).
             AuthGroupAction::Remove { member } | AuthGroupAction::Demote { member, .. } => {
-                let removed = removed_secret_members(current_members, next_members);
+                let removed = removed_secret_members_diff(current_members, next_members);
                 let control_message = if removed.contains(&my_id) {
                     EncryptionControlMessage::Remove { removed: my_id }
                 } else {

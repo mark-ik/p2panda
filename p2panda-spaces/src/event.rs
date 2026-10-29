@@ -7,12 +7,12 @@ use p2panda_auth::group::GroupMember;
 use p2panda_auth::traits::{Conditions, Operation};
 use p2panda_core::VerifyingKey;
 
-use crate::auth::message::AuthMessage;
-use crate::member::Member;
-use crate::message::SpaceMembershipMessage;
+use crate::member::AuthenticatedMember;
+use crate::message::{AuthMessage, SpaceMembershipMessage};
 use crate::types::{AuthGroupAction, AuthGroupState, EncryptionGroupOutput};
 use crate::utils::{
-    added_members, demoted_members, promoted_members, removed_members, sort_members,
+    added_members_diff, demoted_members_diff, promoted_members_diff, removed_members_diff,
+    sort_members,
 };
 use crate::{ActorId, GroupId, MemberId, SpaceId};
 
@@ -55,7 +55,7 @@ impl GroupActor {
 #[allow(clippy::large_enum_variant)]
 pub enum Event<C> {
     /// A member's info with associated key-bundle has been received.
-    Member(Member),
+    Member(AuthenticatedMember),
 
     /// A group membership change occurred in the shared groups state.
     ///
@@ -71,9 +71,9 @@ pub enum Event<C> {
 
     /// A membership change occurred on a space.
     ///
-    /// This event is emitted every time the membership of a space changes. Events are silently
-    /// dropped if the local member is not (yet) a member of the space. For every Event::Groups
-    /// event a Event::Spaces event will be emitted for every effected space.
+    /// This event is emitted every time the membership of a space changes, also if the local
+    /// member is not (yet) a member of the space. For every Event::Groups event a Event::Spaces
+    /// event will be emitted for every effected space.
     Spaces(SpaceEvent<C>),
 }
 
@@ -211,6 +211,22 @@ impl<C> GroupEvent<C> {
             | GroupEvent::Removed { context, .. }
             | GroupEvent::Promoted { context, .. }
             | GroupEvent::Demoted { context, .. } => context,
+        }
+    }
+
+    /// Current members of a group which was effected by this event. This can be the main group
+    /// itself or any nested ones.
+    ///
+    /// Returns `None` if the given group was not effected by this event.
+    pub fn members(&self, group_id: GroupId) -> Option<&[(ActorId, Access<C>)]> {
+        let context = self.context();
+        if self.group_id() == group_id {
+            Some(&context.members)
+        } else {
+            context
+                .effected_group_members
+                .get(&group_id)
+                .map(|members| members.as_slice())
         }
     }
 
@@ -421,7 +437,7 @@ where
             groups_context,
         },
         AuthGroupAction::Add { .. } => {
-            let added = added_members(previous_members, next_members);
+            let added = added_members_diff(previous_members, next_members);
             SpaceEvent::Added {
                 space_id,
                 added,
@@ -430,7 +446,7 @@ where
             }
         }
         AuthGroupAction::Remove { .. } => {
-            let removed = removed_members(previous_members, next_members);
+            let removed = removed_members_diff(previous_members, next_members);
             SpaceEvent::Removed {
                 space_id,
                 removed,
@@ -439,7 +455,7 @@ where
             }
         }
         AuthGroupAction::Promote { .. } => {
-            let promoted = promoted_members(previous_members, next_members);
+            let promoted = promoted_members_diff(previous_members, next_members);
             SpaceEvent::Promoted {
                 space_id,
                 promoted,
@@ -448,7 +464,7 @@ where
             }
         }
         AuthGroupAction::Demote { .. } => {
-            let demoted = demoted_members(previous_members, next_members);
+            let demoted = demoted_members_diff(previous_members, next_members);
             SpaceEvent::Demoted {
                 space_id,
                 demoted,

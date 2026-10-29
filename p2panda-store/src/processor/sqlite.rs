@@ -15,9 +15,9 @@ where
 {
     type Error = SqliteError;
 
-    async fn get_event(&self, id: &Hash) -> Result<Option<T>, Self::Error> {
+    async fn get_event_tx(&self, namespace: &str, id: &Hash) -> Result<Option<T>, Self::Error> {
         let event_bytes: Option<Vec<u8>> = self
-            .execute(async |pool| {
+            .tx(async |tx| {
                 query_scalar(
                     "
                     SELECT
@@ -25,11 +25,13 @@ where
                     FROM
                         processor_v1
                     WHERE
-                        id = ?
+                        namespace = ?
+                        AND id = ?
                     ",
                 )
+                .bind(namespace)
                 .bind(id.to_hex())
-                .fetch_optional(pool)
+                .fetch_optional(&mut **tx)
                 .await
                 .map_err(SqliteError::Sqlite)
             })
@@ -44,7 +46,7 @@ where
         }
     }
 
-    async fn set_event(&self, id: &Hash, event: &T) -> Result<(), Self::Error> {
+    async fn set_event_tx(&self, namespace: &str, id: &Hash, event: &T) -> Result<(), Self::Error> {
         // TODO: Do we expect to only ever store an operation-related event once or might it be
         // stored multiple times as it moves through the pipeline?
         //
@@ -54,11 +56,12 @@ where
                 "
                 INSERT OR IGNORE
                     INTO
-                        processor_v1(id, event)
+                        processor_v1(namespace, id, event)
                     VALUES
-                        (?, ?)
+                        (?, ?, ?)
                 ",
             )
+            .bind(namespace)
             .bind(id.to_hex())
             .bind(encode_cbor(&event).map_err(|err| SqliteError::Encode("event".to_string(), err))?)
             .execute(&mut **tx)

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use p2panda_auth::AccessLevel;
-use p2panda_core::cbor::{DecodeError, decode_cbor};
+use p2panda_core::cbor::DecodeError;
 use p2panda_core::traits::Digest;
 use p2panda_core::{Hash, Topic, VerifyingKey};
 use p2panda_net::NodeId;
@@ -17,8 +17,6 @@ use p2panda_net::sync::SyncHandle;
 use p2panda_net::utils::ShortFormat;
 use p2panda_spaces::{ActorId, AuthMessage, GroupId, SpaceContext, SpaceId};
 use p2panda_store::SqliteStore;
-use p2panda_stream::groups::{GroupsProcessorArgs, GroupsResult};
-use p2panda_stream::spaces::SpacesResult;
 use p2panda_sync::protocols::TopicLogSyncEvent;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -30,7 +28,7 @@ use crate::egress::EgressDestination;
 use crate::forge::OperationForge;
 use crate::node::{AckPolicy, CreateStreamError};
 use crate::operation::{Extensions, Header, Operation};
-use crate::processor::{ProcessorError, ProcessorStatus};
+use crate::processor::ProcessorError;
 use crate::spaces::types::{AuthCapabilities, InnerSpaceEvent, SpacesEvent};
 use crate::spaces::{GroupActor, InnerGroupEvent, to_actors, to_members};
 use crate::streams::acked::{Acked, AckedError};
@@ -38,6 +36,7 @@ use crate::streams::drop_guard::StreamDropGuard;
 use crate::streams::external_stream::{
     ExternalStream, ExternalStreamEvent, ExternalStreamFuture, SessionId,
 };
+use crate::streams::process_operation_out;
 use crate::streams::publisher::StreamPublisher;
 use crate::streams::replay::{ReplayError, StreamFrom, replay_log_ranges, reset_orderer};
 use crate::streams::subscription::StreamSubscription;
@@ -110,11 +109,15 @@ pub(crate) async fn processed_stream<M>(
     pipeline: Pipeline,
     event_tx: broadcast::Sender<SystemEvent>,
     from: StreamFrom,
+    custom_cursor_name: Option<String>,
 ) -> Result<(StreamPublisher<M>, StreamSubscription<M>), CreateStreamError>
 where
     M: Serialize + for<'a> Deserialize<'a> + Send + 'static,
 {
-    let acked = Acked::new(store.clone(), topic);
+    let acked = match custom_cursor_name {
+        Some(cursor_name) => Acked::from_name(store.clone(), topic, cursor_name),
+        None => Acked::new(store.clone(), topic),
+    };
 
     // Sync handle is used on the publisher and when importing from external streams.
     //
@@ -196,18 +199,12 @@ where
                     // Handle resulting output events from the pipeline and forward them as stream
                     // events to application layer, when applicable.
                     from_pipeline_event = pipeline.next() => {
-                        if let Some(forward_events) =
-                            process_operation_out::<M>(
-                                from_pipeline_event,
-                                topic,
-                                ack_policy,
-                                &acked
-                            ).await
-                        {
-                            forward_events
-                        } else {
-                            continue;
-                        }
+                        process_operation_out::<M>(
+                            from_pipeline_event,
+                            topic,
+                            ack_policy,
+                            &acked
+                        ).await
                     },
 
                     // Any other process forwarding an event (like "replay ended", etc.) to the
@@ -509,164 +506,6 @@ pub(crate) async fn process_operation_in(
     // process_operation_out. The returned event here is only for (optional) inspection for users
     // who published an operation locally and want to await until it is processed.
     event
-}
-
-/// Handle the resulting event output coming from the processor pipeline.
-pub(crate) async fn process_operation_out<M>(
-    event: Event,
-    topic: Topic,
-    ack_policy: AckPolicy,
-    acked: &Acked,
-) -> Option<Vec<ForwardEvent<M>>>
-where
-    M: for<'a> Deserialize<'a> + Send + 'static,
-{
-    let source = event.source.clone();
-
-    if let Some(error) = event.failure_reason() {
-        warn!(
-            id = %event.hash(),
-            "processing operation failed: {}",
-            error,
-        );
-
-        let failure_event = vec![ForwardEvent::topic_stream(StreamEvent::ProcessingFailed {
-            event,
-            error,
-            source,
-        })];
-
-        return Some(failure_event);
-    }
-
-    // Collection of events to be returned from this function.
-    //
-    // Processing of a spaces event may yield multiple events to be forwarded to the user, while
-    // processing any other event will only yield a single user event.
-    let mut forward_events = Vec::new();
-
-    // Process group processor events.
-    if let ProcessorStatus::Completed(GroupsResult::Processed) = &event.groups
-        && let GroupsProcessorArgs::Process { message } = &event.groups_args
-    {
-        forward_events.push(ForwardEvent::Topic(Box::new(to_group_stream_event(
-            &event, message,
-        ))));
-    }
-
-    // Process spaces events.
-    if let ProcessorStatus::Completed(SpacesResult::Processed { ref events }) = event.spaces {
-        // Multiple events can be released at once.
-        for space_event in events {
-            match space_event {
-                p2panda_spaces::Event::Application { space_id: _, data } => {
-                    match decode_cbor::<M, _>(&data[..]) {
-                        Ok(message) => {
-                            // Only ack events automatically if processing or decoding did not fail.
-                            if ack_policy == AckPolicy::Automatic
-                                && let Err(error) = acked.ack(&event).await
-                            {
-                                forward_events.push(ForwardEvent::topic_stream(
-                                    StreamEvent::AckFailed {
-                                        event: event.clone(),
-                                        error: Arc::new(error),
-                                    },
-                                ));
-                            }
-
-                            forward_events.push(ForwardEvent::topic_stream(
-                                StreamEvent::Processed {
-                                    operation: ProcessedOperation {
-                                        event: event.clone(),
-                                        topic,
-                                        acked: acked.clone(),
-                                        message,
-                                    },
-                                    source: source.clone(),
-                                },
-                            ));
-                        }
-                        Err(error) => forward_events.push(ForwardEvent::topic_stream(
-                            StreamEvent::DecodeFailed {
-                                event: event.clone(),
-                                error,
-                            },
-                        )),
-                    }
-                }
-
-                p2panda_spaces::Event::Member(member) => forward_events
-                    .push(ForwardEvent::topic_stream(StreamEvent::Member(member.id()))),
-
-                p2panda_spaces::Event::Groups(group_event) => forward_events.push(
-                    ForwardEvent::system(to_system_event(group_event.to_owned())),
-                ),
-
-                p2panda_spaces::Event::Spaces(space_event) => {
-                    forward_events.push(ForwardEvent::topic_stream(to_stream_event(
-                        space_event.to_owned(),
-                        event.clone(),
-                    )))
-                }
-            }
-        }
-    } else {
-        // Only forward non-spaces operations to the application-layer if they have a body.
-        let Some(body) = event.body() else {
-            // _Always_ ack system-level events, even if no automatic policy was configured.
-            if let Err(error) = acked.ack(&event).await {
-                return Some(vec![ForwardEvent::topic_stream(StreamEvent::AckFailed {
-                    event,
-                    error: Arc::new(error),
-                })]);
-            }
-
-            return None;
-        };
-
-        // Attempt decoding application-layer message. This takes place _after_ system-level
-        // processing completed and the operation was ingested.
-        //
-        // In case decoding fails due to an application bug, users have the option to re-play this
-        // persisted operation and attempt decoding again.
-        //
-        // If application data is malformed users can choose to remove the payload of the operation
-        // or delete the whole log altogether.
-        //
-        // TODO: Is this mixing up concerns? We can only handle bytes on our end and let the users
-        // do decoding on application layer?
-        debug!(id = %event.operation.hash(), "processing application message");
-        match decode_cbor::<M, _>(body.as_bytes()) {
-            Ok(message) => {
-                // Only ack events automatically if processing or decoding did not fail.
-                if ack_policy == AckPolicy::Automatic
-                    && let Err(error) = acked.ack(&event).await
-                {
-                    return Some(vec![ForwardEvent::topic_stream(StreamEvent::AckFailed {
-                        event,
-                        error: Arc::new(error),
-                    })]);
-                }
-
-                return Some(vec![ForwardEvent::topic_stream(StreamEvent::Processed {
-                    operation: ProcessedOperation {
-                        event,
-                        topic,
-                        acked: acked.clone(),
-                        message,
-                    },
-                    source,
-                })]);
-            }
-            Err(error) => {
-                return Some(vec![ForwardEvent::topic_stream(
-                    StreamEvent::DecodeFailed { event, error },
-                )]);
-            }
-        }
-    }
-
-    Some(forward_events)
 }
 
 /// Membership change action which has been applied to a group.
@@ -1001,10 +840,10 @@ impl<M> From<SystemEvent> for ForwardEvent<M> {
 /// Processed operation with application message coming from a topic stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessedOperation<M> {
-    event: Event,
-    topic: Topic,
-    acked: Acked,
-    message: M,
+    pub(crate) event: Event,
+    pub(crate) topic: Topic,
+    pub(crate) acked: Acked,
+    pub(crate) message: M,
 }
 
 impl<M> ProcessedOperation<M> {

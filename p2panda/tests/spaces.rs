@@ -30,11 +30,9 @@ struct SecretData {
 }
 
 mod spaces_api {
-    use std::collections::HashSet;
 
     use p2panda::Topic;
-    use p2panda::spaces::InnerGroupEvent;
-    use p2panda::streams::{StreamEvent, StreamFrom, SystemEvent};
+    use p2panda::streams::{GroupAction, StreamEvent, StreamFrom};
     use p2panda_auth::{Access, AccessLevel};
     use p2panda_core::test_utils::setup_logging;
     use p2panda_spaces::{MemberId, SpaceEvent};
@@ -43,13 +41,12 @@ mod spaces_api {
     use super::{SecretData, Swarm};
 
     #[tokio::test]
-    async fn create_space_for_multiple_members() -> Result<(), Box<dyn std::error::Error>> {
+    async fn space_with_device_group_member() -> Result<(), Box<dyn std::error::Error>> {
         setup_logging();
 
         let swarm = Swarm::new();
 
         let panda = swarm.spawn_node().await;
-        let mut panda_system_rx = panda.event_stream().await?;
 
         // Spaces behave like topic-streams, just that they're encrypted towards members.
         let topic = Topic::random();
@@ -71,7 +68,6 @@ mod spaces_api {
         // We can manage (nested) groups (useful for multi-device, etc.)
         let penguin_laptop = swarm.spawn_node().await;
         let penguin_mobile = swarm.spawn_node().await;
-        let mut penguin_mobile_system_rx = penguin_mobile.event_stream().await?;
 
         // Penguin subscribes to the space in order to publish some key bundles.
         let (penguin_laptop_space, mut penguin_laptop_rx) =
@@ -80,90 +76,113 @@ mod spaces_api {
             penguin_mobile.space::<SecretData>(topic).await?;
 
         // Panda receives both penguins key bundles.
-        let mut expected = HashSet::from([penguin_laptop.id(), penguin_mobile.id()]);
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(verifying_key) = event {
-                expected.remove(&verifying_key);
-                if expected.is_empty() {
-                    break;
-                }
-            };
+        for id in [penguin_laptop.id(), penguin_mobile.id()] {
+            panda.member(id).registered().await.unwrap();
         }
 
         // Penguin creates a device group (on their laptop).
-        let (penguin, _) = penguin_laptop
+        let (penguin_group, mut penguin_group_rx) = penguin_laptop
             .create_group(&[
                 (penguin_laptop.id(), AccessLevel::Write),
                 (penguin_mobile.id(), AccessLevel::Read),
             ])
             .await?;
 
-        // Panda receives the group.
-        while let Some(event) = panda_system_rx.next().await {
-            if let SystemEvent::Groups {
+        // Penguin themselves receives the CREATE group event on the group stream.
+        while let Some(event) = penguin_group_rx.next().await {
+            if let StreamEvent::Group {
                 group_id,
-                inner: InnerGroupEvent::Created { .. },
+                action: GroupAction::Created { .. },
                 ..
             } = event
             {
-                if group_id == penguin.id() {
+                if group_id == penguin_group.id() {
                     break;
                 }
             };
         }
 
-        // Penguin mobile receives the group.
-        while let Some(event) = penguin_mobile_system_rx.next().await {
-            if let SystemEvent::Groups {
+        // Panda wants to add Penguin to the space via their device group. First they need to
+        // receive the group via a side-channel. This can be achieved by subscribing directly to
+        // the group.
+        let (_penguin_group_on_panda, mut penguin_group_on_panda_rx) =
+            panda.group(penguin_group.id()).await.unwrap();
+
+        // Panda receives the CREATE group event.
+        while let Some(event) = penguin_group_on_panda_rx.next().await {
+            if let StreamEvent::Group {
                 group_id,
-                inner: InnerGroupEvent::Created { .. },
+                action: GroupAction::Created { .. },
                 ..
             } = event
             {
-                if group_id == penguin.id() {
+                if group_id == penguin_group.id() {
                     break;
                 }
             };
         }
 
-        panda_space.add(penguin.id(), AccessLevel::Read).await?;
+        // Panda now has penguins device group and can add them to the space.
+        panda_space
+            .add(penguin_group.id(), AccessLevel::Read)
+            .await?;
 
+        // Everyone receives the ADD space event.
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 3);
-                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Added { .. },
+                actors,
+                ..
+            } = event
+            {
+                if actors
+                    .iter()
+                    .any(|(actor, _)| actor.id() == penguin_group.id())
+                {
                     break;
                 }
             };
         }
 
         while let Some(event) = penguin_laptop_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 3);
-                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Added { .. },
+                actors,
+                ..
+            } = event
+            {
+                if actors
+                    .iter()
+                    .any(|(actor, _)| actor.id() == penguin_group.id())
+                {
                     break;
                 }
             };
         }
 
+        // Penguin mobile never subscribed to the device group, but they still receive this event
+        // which required the group to be present. This is due to the fact that once groups become
+        // a part of a space, they are always replicated over the space topic as well.
         while let Some(event) = penguin_mobile_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 3);
-                    assert!(members.contains(&(panda.id(), AccessLevel::Manage)));
-                    assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
-                    assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Added { .. },
+                actors,
+                ..
+            } = event
+            {
+                if actors
+                    .iter()
+                    .any(|(actor, _)| actor.id() == penguin_group.id())
+                {
                     break;
                 }
             };
         }
 
+        let penguin_laptop_space = penguin_laptop_space.joined().await?;
+        let penguin_mobile_space = penguin_mobile_space.joined().await?;
+
+        // All nodes arrive at the same state for the space.
         let members = panda_space.members().await?;
         assert!(members.contains(&(penguin_laptop.id(), AccessLevel::Read)));
         assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
@@ -226,7 +245,7 @@ mod spaces_api {
         // Panda promotes penguin to have "write" access.
         assert!(
             panda_space
-                .promote(penguin.id(), AccessLevel::Write)
+                .promote(penguin_group.id(), AccessLevel::Write)
                 .await
                 .is_ok()
         );
@@ -235,7 +254,7 @@ mod spaces_api {
             panda_space
                 .actors()
                 .await?
-                .contains(&(penguin.id(), AccessLevel::Write))
+                .contains(&(penguin_group.id(), AccessLevel::Write))
         );
 
         while let Some(event) = panda_rx.next().await {
@@ -269,7 +288,7 @@ mod spaces_api {
         // Panda demotes penguin to have "read" access.
         assert!(
             panda_space
-                .demote(penguin.id(), AccessLevel::Read)
+                .demote(penguin_group.id(), AccessLevel::Read)
                 .await
                 .is_ok()
         );
@@ -287,7 +306,7 @@ mod spaces_api {
             panda_space
                 .actors()
                 .await?
-                .contains(&(penguin.id(), AccessLevel::Read))
+                .contains(&(penguin_group.id(), AccessLevel::Read))
         );
 
         // Penguin laptop also receives the promote and demote.
@@ -421,7 +440,7 @@ mod spaces_api {
         //
         // Causal order: The second operation points at the first to declare it as a dependency.
         let topic = Topic::random();
-        let out = panda
+        let (_space, out) = panda
             .spaces_manager()
             .create_space(
                 topic,
@@ -451,17 +470,7 @@ mod spaces_api {
 
         // We expect Penguin to be fine with processing out-of-order operations and normally joining
         // the space.
-        while let Some(stream_event) = penguin_rx.next().await {
-            if let StreamEvent::Space {
-                inner: SpaceEvent::Created { space_id, .. },
-                ..
-            } = stream_event
-            {
-                if space_id == topic.into() {
-                    break;
-                }
-            }
-        }
+        let penguin_space = penguin_space.joined().await.unwrap();
 
         let members: Vec<MemberId> = penguin_space
             .members()
@@ -522,53 +531,62 @@ mod spaces_api {
 }
 
 mod spaces_repair_task {
+
     use p2panda::Topic;
-    use p2panda::spaces::InnerGroupEvent;
-    use p2panda::streams::{StreamEvent, SystemEvent};
+    use p2panda::streams::{GroupAction, StreamEvent};
     use p2panda_auth::AccessLevel;
     use p2panda_core::test_utils::setup_logging;
-    use p2panda_spaces::SpaceEvent;
     use tokio_stream::StreamExt;
 
     use super::{SecretData, Swarm};
 
     #[tokio::test]
-    async fn sync_repair_space() {
+    async fn repair_space_sync() {
+        // This test demonstrates that the repair task will successfully incorporate concurrently
+        // published changes to a member group into a space when they are eventually received.
         setup_logging();
 
         let swarm = Swarm::new();
         let topic = Topic::random();
 
         let panda = swarm.spawn_node().await;
-        let mut panda_system_rx = panda.event_stream().await.unwrap();
         let penguin = swarm.spawn_node().await;
-        let mut penguin_system_rx = penguin.event_stream().await.unwrap();
+        let penguin_mobile = swarm.spawn_node().await;
 
-        // Penguin creates a group before subscribing to the space.
+        // Panda creates a space.
+        let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
+
+        // Penguin and Penguin (mobile) subscribe to the space and send their key-bundles.
+        let (penguin_space, _penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        let (penguin_mobile_space, _penguin_mobile_rx) =
+            penguin_mobile.space::<SecretData>(topic).await.unwrap();
+
+        // Panda receives both penguins key bundles.
+        for id in [penguin.id(), penguin_mobile.id()] {
+            panda.member(id).registered().await.unwrap();
+        }
+
+        // Penguin and Penguin (laptop) now unsubscribe from the space for the rest of the test.
+        penguin_space.close().await.unwrap();
+        penguin_mobile_space.close().await.unwrap();
+
+        // Penguin creates a group but does not subscribing to the space yet.
         let (penguin_group, _) = penguin
             .create_group(&[(penguin.id(), AccessLevel::Manage)])
             .await
             .unwrap();
 
-        // They then subscribe, as does panda.
-        let (_penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
-        let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
+        // Panda wants to add Penguin to the space via their device group. First they need to
+        // receive the group via a side-channel. This can be achieved by subscribing directly to
+        // the group.
+        let (penguin_group_on_panda, mut penguin_group_on_panda_rx) =
+            panda.group(penguin_group.id()).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space {
-                inner: SpaceEvent::Created { .. },
-                ..
-            } = event
-            {
-                break;
-            };
-        }
-
-        // Panda receives the group.
-        while let Some(event) = panda_system_rx.next().await {
-            if let SystemEvent::Groups {
+        // Panda receives the CREATE group event.
+        while let Some(event) = penguin_group_on_panda_rx.next().await {
+            if let StreamEvent::Group {
                 group_id,
-                inner: InnerGroupEvent::Created { .. },
+                action: GroupAction::Created { .. },
                 ..
             } = event
             {
@@ -578,82 +596,111 @@ mod spaces_repair_task {
             };
         }
 
-        // Penguin receives the group.
-        while let Some(event) = penguin_system_rx.next().await {
-            if let SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            } = event
-            {
-                if group_id == penguin_group.id() {
-                    break;
-                }
-            };
-        }
-        // We expect panda to be able to add penguin group as a space member now.
+        // Panda unsubscribes from the group, they won't receive any further group operations.
+        penguin_group_on_panda.close().await.unwrap();
+
+        // Panda adds penguin group to the space.
         panda_space
             .add(penguin_group.id(), AccessLevel::Read)
             .await
             .unwrap();
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 2);
-                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+            if let StreamEvent::Space { members, .. } = event {
+                if members.len() == 2 && members.contains(&(penguin.id(), AccessLevel::Read)) {
+                    break;
+                };
+            };
+        }
+
+        // Penguin now adds a new device to their group.
+        //
+        // This is happening concurrently to the group being added to the space, therefore panda
+        // never incorporated the membership change it reflects.
+        penguin_group
+            .add(penguin_mobile.id(), AccessLevel::Read)
+            .await
+            .unwrap();
+
+        // Panda subscribes to the group again and will receive the "ADD" penguin mobile message.
+        let (_penguin_group_on_panda, mut penguin_group_on_panda_rx) =
+            panda.group(penguin_group.id()).await.unwrap();
+
+        while let Some(event) = penguin_group_on_panda_rx.next().await {
+            if let StreamEvent::Group {
+                group_id,
+                action: GroupAction::Added { .. },
+                ..
+            } = event
+            {
+                if group_id == penguin_group.id() {
                     break;
                 }
             };
         }
 
-        while let Some(event) = penguin_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 2);
-                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+        // The repair task should be triggered and the ADD message incorporated into the space.
+        while let Some(event) = panda_rx.next().await {
+            if let StreamEvent::Space { members, .. } = event {
+                if members.len() == 3 && members.contains(&(penguin_mobile.id(), AccessLevel::Read))
+                {
                     break;
-                }
+                };
             };
         }
+
+        let members = panda_space.members().await.unwrap();
+        assert_eq!(members.len(), 3);
+        assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
     }
 
     #[tokio::test]
-    async fn live_repair_space() {
+    async fn repair_space_live() {
+        // This test demonstrates that the repair task will successfully incorporate concurrently
+        // published changes to a member group into a space when they are eventually received.
         setup_logging();
 
         let swarm = Swarm::new();
         let topic = Topic::random();
 
         let panda = swarm.spawn_node().await;
-        let mut panda_system_rx = panda.event_stream().await.unwrap();
         let penguin = swarm.spawn_node().await;
+        let penguin_mobile = swarm.spawn_node().await;
 
-        // Penguin subscribes to the space.
-        let (_penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        // Panda creates a space.
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space {
-                inner: SpaceEvent::Created { .. },
-                ..
-            } = event
-            {
-                break;
-            };
+        // Penguin and Penguin (mobile) subscribe to the space and send their key-bundles.
+        let (penguin_space, _penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        let (penguin_mobile_space, _penguin_mobile_rx) =
+            penguin_mobile.space::<SecretData>(topic).await.unwrap();
+
+        // Panda receives both penguins key bundles.
+        for id in [penguin.id(), penguin_mobile.id()] {
+            panda.member(id).registered().await.unwrap();
         }
 
-        // And then creates a group.
+        // Penguin and Penguin (laptop) now unsubscribe from the space for the rest of the test.
+        penguin_space.close().await.unwrap();
+        penguin_mobile_space.close().await.unwrap();
+
+        // Penguin creates a group but does not subscribing to the space yet.
         let (penguin_group, _) = penguin
             .create_group(&[(penguin.id(), AccessLevel::Manage)])
             .await
             .unwrap();
 
-        // Panda receives the group.
-        while let Some(event) = panda_system_rx.next().await {
-            if let SystemEvent::Groups {
+        // Panda wants to add Penguin to the space via their device group. First they need to
+        // receive the group via a side-channel. This can be achieved by subscribing directly to
+        // the group.
+        let (_penguin_group_on_panda, mut penguin_group_on_panda_rx) =
+            panda.group(penguin_group.id()).await.unwrap();
+
+        // Panda receives the CREATE group event.
+        while let Some(event) = penguin_group_on_panda_rx.next().await {
+            if let StreamEvent::Group {
                 group_id,
-                inner: InnerGroupEvent::Created { .. },
+                action: GroupAction::Created { .. },
                 ..
             } = event
             {
@@ -663,50 +710,70 @@ mod spaces_repair_task {
             };
         }
 
-        // We expect panda to be able to add penguin group to the space.
+        // Panda adds penguin group to the space.
         panda_space
             .add(penguin_group.id(), AccessLevel::Read)
             .await
             .unwrap();
 
         while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 2);
-                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+            if let StreamEvent::Space { members, .. } = event {
+                if members.len() == 2 && members.contains(&(penguin.id(), AccessLevel::Read)) {
+                    break;
+                };
+            };
+        }
+
+        // Penguin now adds a new device to their group.
+        //
+        // As penguin is not actually subscribed to the space (they are still unaware they are
+        // members) they will not incorporate this change themselves. Panda is still subscribed to
+        // the group so they should receive it in live-mode and automatically incorporate it via
+        // the repair task being triggered.
+        penguin_group
+            .add(penguin_mobile.id(), AccessLevel::Read)
+            .await
+            .unwrap();
+
+        while let Some(event) = penguin_group_on_panda_rx.next().await {
+            if let StreamEvent::Group {
+                group_id,
+                action: GroupAction::Added { .. },
+                ..
+            } = event
+            {
+                if group_id == penguin_group.id() {
                     break;
                 }
             };
         }
 
-        while let Some(event) = penguin_rx.next().await {
-            if let StreamEvent::Space { members, inner, .. } = event {
-                if let SpaceEvent::Added { .. } = inner {
-                    assert_eq!(members.len(), 2);
-                    assert!(members.contains(&(penguin.id(), AccessLevel::Read)));
+        // The repair task should be triggered and the ADD message incorporated into the space.
+        while let Some(event) = panda_rx.next().await {
+            if let StreamEvent::Space { members, .. } = event {
+                if members.len() == 3 && members.contains(&(penguin_mobile.id(), AccessLevel::Read))
+                {
                     break;
-                }
+                };
             };
         }
+
+        let members = panda_space.members().await.unwrap();
+        assert_eq!(members.len(), 3);
+        assert!(members.contains(&(penguin_mobile.id(), AccessLevel::Read)));
     }
 }
 
 mod spaces_api_validation {
     use std::assert_matches;
 
-    use p2panda::spaces::{
-        AddGroupMemberError, AddSpaceMemberError, InnerGroupEvent, PublishSpaceError,
-        RemoveGroupMemberError, RemoveSpaceMemberError,
-    };
-    use p2panda::streams::{StreamEvent, SystemEvent};
+    use p2panda::spaces::{AddSpaceMemberError, PublishSpaceError, RemoveSpaceMemberError};
     use p2panda::{SigningKey, Topic};
     use p2panda_auth::AccessLevel;
     use p2panda_auth::validation::{AddMemberError, RemoveMemberError, WriteError};
     use p2panda_core::test_utils::setup_logging;
-    use p2panda_spaces::SpaceEvent;
-    use tokio_stream::StreamExt;
 
-    use super::{SecretData, Swarm};
+    use crate::Swarm;
 
     #[tokio::test]
     async fn api_validation() {
@@ -717,7 +784,7 @@ mod spaces_api_validation {
 
         let panda = swarm.spawn_node().await;
 
-        let (panda_space, mut panda_rx) = panda.create_space::<String>(topic).await.unwrap();
+        let (panda_space, _panda_rx) = panda.create_space::<String>(topic).await.unwrap();
 
         // Panda can't re-add themselves.
         let result = panda_space.add(panda.id(), AccessLevel::Write).await;
@@ -743,15 +810,9 @@ mod spaces_api_validation {
 
         // Tiger subscribes to the space.
         let tiger = swarm.spawn_node().await;
-        let (tiger_space, mut tiger_rx) = tiger.space::<String>(topic).await.unwrap();
+        let (tiger_space, _tiger_rx) = tiger.space::<String>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(verifying_key) = event {
-                if verifying_key == tiger.id() {
-                    break;
-                }
-            };
-        }
+        panda.member(tiger.id()).registered().await.unwrap();
 
         // Panda adds tiger with read-only access.
         panda_space
@@ -759,15 +820,7 @@ mod spaces_api_validation {
             .await
             .unwrap();
 
-        while let Some(event) = tiger_rx.next().await {
-            if let StreamEvent::Space {
-                inner: SpaceEvent::Added { .. },
-                ..
-            } = event
-            {
-                break;
-            };
-        }
+        let tiger_space = tiger_space.joined().await.unwrap();
 
         // Tiger can't publish into the space.
         let result = tiger_space.publish("I'm a bit naughty.".to_string()).await;
@@ -789,109 +842,6 @@ mod spaces_api_validation {
             result.err().unwrap(),
             PublishSpaceError::Validation {
                 err: WriteError::UnrecognisedActor,
-                ..
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn groups_api_validation() {
-        setup_logging();
-
-        let swarm = Swarm::new();
-
-        let panda = swarm.spawn_node().await;
-        let lion = swarm.spawn_node().await;
-        let tiger = swarm.spawn_node().await;
-
-        let topic = Topic::random();
-
-        // Having a space in this test is only required to sync the group operations.
-        let (_panda_space, _panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
-        let (_tiger_space, _tiger_rx) = tiger.space::<SecretData>(topic).await.unwrap();
-        let (_lion_space, _lion_rx) = lion.space::<SecretData>(topic).await.unwrap();
-
-        let mut lion_system_rx = lion.event_stream().await.unwrap();
-        let mut tiger_system_rx = tiger.event_stream().await.unwrap();
-
-        let (panda_group, _) = panda
-            .create_group(&[
-                (panda.id(), AccessLevel::Manage),
-                (lion.id(), AccessLevel::Read),
-            ])
-            .await
-            .unwrap();
-
-        // Panda can't re-add themselves.
-        let result = panda_group.add(panda.id(), AccessLevel::Write).await;
-        assert_matches!(
-            result.err().unwrap(),
-            AddGroupMemberError::Validation {
-                err: AddMemberError::AlreadyAdded,
-                ..
-            }
-        );
-
-        // Panda can't remove a non-member.
-        let result = panda_group
-            .remove(SigningKey::generate().verifying_key())
-            .await;
-        assert_matches!(
-            result.err().unwrap(),
-            RemoveGroupMemberError::Validation {
-                err: RemoveMemberError::NonMember,
-                ..
-            }
-        );
-
-        // Lion receives the group event on their system stream.
-        loop {
-            if let Some(SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            }) = lion_system_rx.next().await
-            {
-                if group_id == panda_group.id() {
-                    break;
-                }
-            };
-        }
-
-        // Tiger receives the group event on their system stream.
-        loop {
-            if let Some(SystemEvent::Groups {
-                group_id,
-                inner: InnerGroupEvent::Created { .. },
-                ..
-            }) = tiger_system_rx.next().await
-            {
-                if group_id == panda_group.id() {
-                    break;
-                }
-            };
-        }
-
-        // Tiger isn't a recognized group actor.
-        let (panda_group_on_tiger, _) = tiger.group(panda_group.id()).await.unwrap();
-        let result = panda_group_on_tiger
-            .add(tiger.id(), AccessLevel::Write)
-            .await;
-        assert_matches!(
-            result.err().unwrap(),
-            AddGroupMemberError::Validation {
-                err: AddMemberError::UnrecognisedActor,
-                ..
-            }
-        );
-
-        // Lion doesn't have required access level.
-        let (panda_group_on_lion, _) = lion.group(panda_group.id()).await.unwrap();
-        let result = panda_group_on_lion.remove(panda.id()).await;
-        assert_matches!(
-            result.err().unwrap(),
-            RemoveGroupMemberError::Validation {
-                err: RemoveMemberError::InsufficientAccess,
                 ..
             }
         );
@@ -994,15 +944,9 @@ mod filtered_messages {
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
 
         // Penguin subscribes to the space.
-        let (penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        let (penguin_space, _penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(member) = event {
-                if member == penguin.id() {
-                    break;
-                }
-            };
-        }
+        panda.member(penguin.id()).registered().await.unwrap();
 
         // Panda adds Penguin as a member of the space.
         panda_space
@@ -1010,15 +954,7 @@ mod filtered_messages {
             .await
             .unwrap();
 
-        while let Some(event) = penguin_rx.next().await {
-            let StreamEvent::Space { members, .. } = event else {
-                continue;
-            };
-
-            if members.iter().any(|(member, _)| *member == penguin.id()) {
-                break;
-            }
-        }
+        let penguin_space = penguin_space.joined().await.unwrap();
 
         // Penguin publishes a message to all members.
         let message = SecretData {
@@ -1058,6 +994,7 @@ mod filtered_messages {
         // Penguin subscribes to the space again and immediately publishes a new message, before
         // they received panda's remove message.
         let (penguin_space, _penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        let penguin_space = penguin_space.joined().await.unwrap();
 
         let message = SecretData {
             title: "Hurtful words".to_string(),
@@ -1116,15 +1053,9 @@ mod filtered_messages {
         let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
 
         // Penguin subscribes to the space.
-        let (penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
+        let (penguin_space, _penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(member) = event {
-                if member == penguin.id() {
-                    break;
-                }
-            };
-        }
+        panda.member(penguin.id()).registered().await.unwrap();
 
         // Panda adds Penguin as a member of the space.
         panda_space
@@ -1132,15 +1063,7 @@ mod filtered_messages {
             .await
             .unwrap();
 
-        while let Some(event) = penguin_rx.next().await {
-            let StreamEvent::Space { members, .. } = event else {
-                continue;
-            };
-
-            if members.iter().any(|(member, _)| *member == penguin.id()) {
-                break;
-            }
-        }
+        let penguin_space = penguin_space.joined().await.unwrap();
 
         // Penguin publishes a message to all members.
         let message = SecretData {
@@ -1169,13 +1092,7 @@ mod filtered_messages {
         // Tiger subscribes to the space.
         let (_tiger_space, mut tiger_rx) = tiger.space::<SecretData>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(member) = event {
-                if member == tiger.id() {
-                    break;
-                }
-            };
-        }
+        panda.member(tiger.id()).registered().await.unwrap();
 
         // Panda adds Tiger as a member of the space.
         panda_space
@@ -1300,6 +1217,8 @@ mod members {
             }
         }
 
+        let node_b_space = node_b_space.joined().await.unwrap();
+
         // B wants to remove C and needs the key bundles of D to do this since they've never sent a
         // direct message to D. Note that B doesn't need a key bundle for A because A already
         // initiated a 2SM session with B when they've been added to the space.
@@ -1329,18 +1248,12 @@ mod sync_authorisation {
         let penguin = swarm.spawn_node().await;
 
         // Panda creates a space.
-        let (panda_space, mut panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
+        let (panda_space, _panda_rx) = panda.create_space::<SecretData>(topic).await.unwrap();
 
         // Penguin subscribes to the space.
         let (penguin_space, mut penguin_rx) = penguin.space::<SecretData>(topic).await.unwrap();
 
-        while let Some(event) = panda_rx.next().await {
-            if let StreamEvent::Member(member) = event {
-                if member == penguin.id() {
-                    break;
-                }
-            };
-        }
+        panda.member(penguin.id()).registered().await.unwrap();
 
         // Panda adds Penguin as a member of the space.
         let penguin_id = penguin.id();
@@ -1405,6 +1318,281 @@ mod sync_authorisation {
 
             assert_eq!(remote_node_id, penguin_id);
             assert_eq!(topic_inner, topic);
+            break;
+        }
+    }
+}
+
+mod spaces_groups_membership {
+    use p2panda::operation::Extensions;
+    use p2panda::spaces::{Group, InnerGroupEvent};
+    use p2panda::streams::{StreamEvent, SystemEvent};
+    use p2panda::{Node, Topic};
+    use p2panda_auth::AccessLevel;
+    use p2panda_core::test_utils::setup_logging;
+    use p2panda_spaces::{SpaceEvent, SpacesStoreState};
+    use p2panda_store::spaces::{SpacesStore, SqliteSpacesStore};
+    use p2panda_store::tx_unwrap;
+    use tokio_stream::StreamExt;
+
+    use crate::Swarm;
+
+    use super::SecretData;
+
+    async fn spawn_node_with_device_group(swarm: &Swarm) -> (Node, Group) {
+        let node = swarm.spawn_node().await;
+        let (device_group, _) = node
+            .create_group(&[(node.id(), AccessLevel::Manage)])
+            .await
+            .unwrap();
+        (node, device_group)
+    }
+
+    #[tokio::test]
+    async fn add_device_groups_to_team_in_space() {
+        setup_logging();
+
+        let swarm = Swarm::new();
+        let topic = Topic::random();
+
+        // Alice, Bob and Claire each create a device group with only themselves inside.
+        let (alice, alice_device) = spawn_node_with_device_group(&swarm).await;
+        let (bob, bob_device) = spawn_node_with_device_group(&swarm).await;
+        let (claire, claire_device) = spawn_node_with_device_group(&swarm).await;
+
+        let _alice_bob_device = alice.group(bob_device.id()).await.unwrap();
+
+        let mut alice_system_rx = alice.event_stream().await.unwrap();
+        let mut bob_system_rx = bob.event_stream().await.unwrap();
+
+        while let Some(event) = alice_system_rx.next().await {
+            if let SystemEvent::Groups { group_id, .. } = event {
+                if group_id == bob_device.id() {
+                    break;
+                }
+            };
+        }
+
+        // Alice creates a space.
+        let (alice_space, mut alice_rx) = alice.create_space::<SecretData>(topic).await.unwrap();
+        let space_group_id = alice_space.group_id().await.unwrap();
+
+        let store = SqliteSpacesStore::<Extensions>::new(alice.store());
+        let y: SpacesStoreState<()> =
+            tx_unwrap!(store, { store.get_space_state_tx(&alice_space.id()).await })
+                .unwrap()
+                .unwrap();
+        assert_eq!(y.groups_y.inner.operations.len(), 1);
+
+        while let Some(event) = alice_rx.next().await {
+            if let StreamEvent::Space {
+                inner: SpaceEvent::Created { .. },
+                ..
+            } = event
+            {
+                break;
+            };
+        }
+
+        // Alice creates a team group with their device group as a member.
+        //
+        // NOTE: As groups can't be assigned manager access level yet we have to add Alice
+        // directly as a member as well.
+        let (team, _team_rx) = alice
+            .create_group(&[
+                (alice_device.id(), AccessLevel::Write),
+                (alice.id(), AccessLevel::Manage),
+            ])
+            .await
+            .unwrap();
+
+        // Alice receives the team group.
+        while let Some(event) = alice_system_rx.next().await {
+            if let SystemEvent::Groups {
+                group_id,
+                inner: InnerGroupEvent::Created { .. },
+                ..
+            } = event
+            {
+                if group_id == team.id() {
+                    break;
+                }
+            };
+        }
+
+        // Alice adds the team group as a member of the space.
+        alice_space
+            .add(team.id(), AccessLevel::Write)
+            .await
+            .unwrap();
+
+        while let Some(event) = alice_system_rx.next().await {
+            if let SystemEvent::Groups {
+                group_id,
+                inner: InnerGroupEvent::Added { added, .. },
+                ..
+            } = event
+            {
+                if group_id == space_group_id && added.id() == team.id() {
+                    break;
+                }
+            };
+        }
+
+        // Bob subscribes to the space.
+        let (bob_space, mut bob_rx) = bob.space::<SecretData>(topic).await.unwrap();
+
+        // Alice receives Bob's key bundle.
+        alice.member(bob.id()).registered().await.unwrap();
+
+        // Alice adds Bob's device group to the team group.
+        //
+        // NOTE: Integrating this change into the space is handled by the repair task.
+        team.add(bob_device.id(), AccessLevel::Write).await.unwrap();
+
+        // Alice and Bob both arrive at the same membership state.
+        loop {
+            let Some(event) = alice_rx.next().await else {
+                panic!("unexpected stream closure");
+            };
+            let StreamEvent::Space { members, .. } = event else {
+                continue;
+            };
+            if !members.iter().any(|(member, _)| *member == bob.id()) {
+                continue;
+            }
+            assert_eq!(members.len(), 2);
+            assert!(members.contains(&(alice.id(), AccessLevel::Manage)));
+            assert!(members.contains(&(bob.id(), AccessLevel::Write)));
+            break;
+        }
+
+        // Bob receives space group.
+        let mut space_group_seen = false;
+        let mut alice_device_group_seen = false;
+        let mut team_group_seen = false;
+        while let Some(event) = bob_system_rx.next().await {
+            if let SystemEvent::Groups {
+                group_id,
+                inner: InnerGroupEvent::Created { .. },
+                ..
+            } = event
+            {
+                if group_id == space_group_id {
+                    space_group_seen = true;
+                }
+
+                if group_id == alice_device.id() {
+                    alice_device_group_seen = true;
+                }
+
+                if group_id == team.id() {
+                    team_group_seen = true;
+                }
+
+                if space_group_seen && alice_device_group_seen && team_group_seen {
+                    break;
+                }
+            };
+        }
+
+        loop {
+            let Some(event) = bob_rx.next().await else {
+                panic!("unexpected stream closure");
+            };
+            let StreamEvent::Space { members, .. } = event else {
+                continue;
+            };
+            if !members.iter().any(|(member, _)| *member == bob.id()) {
+                continue;
+            }
+            assert_eq!(members.len(), 2);
+            assert!(members.contains(&(alice.id(), AccessLevel::Manage)));
+            assert!(members.contains(&(bob.id(), AccessLevel::Write)));
+            break;
+        }
+
+        bob_space.close().await.unwrap();
+
+        // Claire subscribes to the space.
+        let (_claire_space, mut claire_rx) = claire.space::<SecretData>(topic).await.unwrap();
+
+        // Alice subscribes to claire's device group.
+        let _alice_claire_device = alice.group(claire_device.id()).await.unwrap();
+
+        // Alice receives Claire's device group.
+        while let Some(event) = alice_system_rx.next().await {
+            if let SystemEvent::Groups {
+                group_id,
+                inner: InnerGroupEvent::Created { .. },
+                ..
+            } = event
+            {
+                if group_id == claire_device.id() {
+                    break;
+                }
+            };
+        }
+
+        // Alice receives Claire's key bundle.
+        alice.member(claire.id()).registered().await.unwrap();
+
+        // Alice adds Claire's device group to the team group.
+        team.add(claire_device.id(), AccessLevel::Read)
+            .await
+            .unwrap();
+
+        let (_bob_space, mut bob_rx) = bob.space::<SecretData>(topic).await.unwrap();
+
+        // Alice, Bob and Claire all arrive at the same membership state.
+        loop {
+            let Some(event) = alice_rx.next().await else {
+                panic!("unexpected stream closure");
+            };
+            let StreamEvent::Space { members, .. } = event else {
+                continue;
+            };
+            if !members.iter().any(|(member, _)| *member == claire.id()) {
+                continue;
+            }
+            assert_eq!(members.len(), 3);
+            assert!(members.contains(&(alice.id(), AccessLevel::Manage)));
+            assert!(members.contains(&(bob.id(), AccessLevel::Write)));
+            assert!(members.contains(&(claire.id(), AccessLevel::Read)));
+            break;
+        }
+
+        loop {
+            let Some(event) = bob_rx.next().await else {
+                panic!("unexpected stream closure");
+            };
+            let StreamEvent::Space { members, .. } = event else {
+                continue;
+            };
+            if !members.iter().any(|(member, _)| *member == claire.id()) {
+                continue;
+            }
+            assert_eq!(members.len(), 3);
+            assert!(members.contains(&(alice.id(), AccessLevel::Manage)));
+            assert!(members.contains(&(bob.id(), AccessLevel::Write)));
+            assert!(members.contains(&(claire.id(), AccessLevel::Read)));
+            break;
+        }
+
+        loop {
+            let Some(event) = claire_rx.next().await else {
+                panic!("unexpected stream closure");
+            };
+            let StreamEvent::Space { members, .. } = event else {
+                continue;
+            };
+            if !members.iter().any(|(member, _)| *member == claire.id()) {
+                continue;
+            }
+            assert_eq!(members.len(), 3);
+            assert!(members.contains(&(alice.id(), AccessLevel::Manage)));
+            assert!(members.contains(&(bob.id(), AccessLevel::Write)));
+            assert!(members.contains(&(claire.id(), AccessLevel::Read)));
             break;
         }
     }

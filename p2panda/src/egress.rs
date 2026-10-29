@@ -92,7 +92,15 @@ impl EgressDestination {
     }
 }
 
+/// All different stream types.
 #[derive(Debug)]
+pub enum StreamType {
+    Topic,
+    Group,
+    Space,
+}
+
+#[derive(Clone, Debug)]
 pub struct Egress {
     inner: Arc<RwLock<EgressInner>>,
 }
@@ -101,6 +109,7 @@ pub struct Egress {
 struct EgressInner {
     handles: HashMap<Topic, ImportLocalTx>,
     space_ids: HashSet<Topic>,
+    group_ids: HashSet<Topic>,
 }
 
 impl EgressInner {
@@ -128,6 +137,7 @@ impl Egress {
             inner: Arc::new(RwLock::new(EgressInner {
                 handles: HashMap::with_capacity(16),
                 space_ids: HashSet::with_capacity(8),
+                group_ids: HashSet::with_capacity(8),
             })),
         }
     }
@@ -138,15 +148,26 @@ impl Egress {
         }
     }
 
-    pub async fn add_stream(&self, topic: Topic, is_space: bool, import_tx: ImportLocalTx) -> bool {
+    pub async fn add_stream(
+        &self,
+        topic: Topic,
+        stream_type: StreamType,
+        import_tx: ImportLocalTx,
+    ) -> bool {
         let mut inner = self.inner.write().await;
 
         if let Entry::Vacant(entry) = inner.handles.entry(topic) {
             entry.insert(import_tx);
 
-            if is_space {
-                inner.space_ids.insert(topic);
-            }
+            match stream_type {
+                StreamType::Topic => (),
+                StreamType::Group => {
+                    inner.group_ids.insert(topic);
+                }
+                StreamType::Space => {
+                    inner.space_ids.insert(topic);
+                }
+            };
 
             true
         } else {
@@ -154,11 +175,22 @@ impl Egress {
         }
     }
 
+    pub async fn group_topics(&self) -> HashSet<Topic> {
+        let inner = self.inner.read().await;
+        inner.group_ids.clone()
+    }
+
+    pub async fn space_topics(&self) -> HashSet<Topic> {
+        let inner = self.inner.read().await;
+        inner.space_ids.clone()
+    }
+
     // TODO: Make sure we're removing streams as well.
     #[allow(unused)]
     pub async fn remove_stream(&self, topic: Topic) -> bool {
         let mut inner = self.inner.write().await;
         inner.space_ids.remove(&topic);
+        inner.group_ids.remove(&topic);
         inner.handles.remove(&topic).is_some()
     }
 }
@@ -272,6 +304,7 @@ impl EgressHandle {
 
             for topic in broken_channels.iter() {
                 inner.space_ids.remove(topic);
+                inner.group_ids.remove(topic);
                 inner.handles.remove(topic);
             }
         }

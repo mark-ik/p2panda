@@ -39,14 +39,6 @@ impl ReleaseTrackedStore {
 impl LogStore<AnyOperation, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedStore {
     type Error = Infallible;
 
-    async fn get_latest_entry(
-        &self,
-        _author: &VerifyingKey,
-        _log_id: &u64,
-    ) -> Result<Option<AnyOperation>, Self::Error> {
-        Ok(None)
-    }
-
     async fn get_latest_entry_tx(
         &self,
         _author: &VerifyingKey,
@@ -84,7 +76,7 @@ impl LogStore<AnyOperation, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedS
         Ok(Box::pin(futures_util::stream::empty()))
     }
 
-    async fn prune_entries(
+    async fn prune_entries_tx(
         &self,
         _author: &VerifyingKey,
         _log_id: &u64,
@@ -97,7 +89,7 @@ impl LogStore<AnyOperation, VerifyingKey, u64, SeqNum, Hash> for ReleaseTrackedS
 impl TopicStore<Topic, VerifyingKey, u64> for ReleaseTrackedStore {
     type Error = Infallible;
 
-    async fn associate(
+    async fn associate_tx(
         &self,
         _topic: &Topic,
         _author: &VerifyingKey,
@@ -106,7 +98,7 @@ impl TopicStore<Topic, VerifyingKey, u64> for ReleaseTrackedStore {
         Ok(false)
     }
 
-    async fn remove(
+    async fn remove_tx(
         &self,
         _topic: &Topic,
         _author: &VerifyingKey,

@@ -14,13 +14,13 @@ async fn get_and_set_cursor() {
 
     // First insert.
     tx_unwrap!(store, {
-        store.set_cursor(&cursor).await.unwrap();
-    });
+        store.set_cursor_tx(&cursor).await.unwrap();
 
-    assert_eq!(
-        store.get_cursor("test").await.unwrap(),
-        Some(cursor.clone())
-    );
+        assert_eq!(
+            store.get_cursor_tx("test").await.unwrap(),
+            Some(cursor.clone())
+        );
+    });
 
     // Second insert should be an upsert.
     let author = SigningKey::generate().verifying_key();
@@ -30,28 +30,28 @@ async fn get_and_set_cursor() {
     cursor.advance(author, log_id, log_height);
 
     tx_unwrap!(store, {
-        store.set_cursor(&cursor).await.unwrap();
+        store.set_cursor_tx(&cursor).await.unwrap();
+
+        let cursor_2: Cursor<VerifyingKey, u64> = store
+            .get_cursor_tx("test")
+            .await
+            .unwrap()
+            .expect("cursor should exist");
+
+        assert_eq!(cursor_2.log_height(&author, &log_id), Some(&log_height));
     });
-
-    let cursor_2: Cursor<VerifyingKey, u64> = store
-        .get_cursor("test")
-        .await
-        .unwrap()
-        .expect("cursor should exist");
-
-    assert_eq!(cursor_2.log_height(&author, &log_id), Some(&log_height));
 
     // Remove cursor.
     tx_unwrap!(store, {
-        <SqliteStore as CursorStore<VerifyingKey, u64>>::delete_cursor(&store, "test")
+        <SqliteStore as CursorStore<VerifyingKey, u64>>::delete_cursor_tx(&store, "test")
             .await
             .unwrap();
-    });
 
-    assert!(
-        <SqliteStore as CursorStore<VerifyingKey, u64>>::get_cursor(&store, "test")
-            .await
-            .unwrap()
-            .is_none()
-    );
+        assert!(
+            <SqliteStore as CursorStore<VerifyingKey, u64>>::get_cursor_tx(&store, "test")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
 }
